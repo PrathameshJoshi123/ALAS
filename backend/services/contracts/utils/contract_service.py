@@ -75,21 +75,12 @@ class ContractService:
             Exception: If file save or analysis initiation fails
         """
         try:
-            # Create contract record
-            contract = Contract(
-                tenant_id=tenant_id,
-                uploaded_by=user_id,
-                filename=filename,
-                counterparty_name=request.counterparty_name,
-                contract_type=request.contract_type,
-                status=ContractStatus.UPLOADED,
-            )
+            from uuid import uuid4
             
-            self.db.add(contract)
-            self.db.flush()  # Get the ID without committing
-            contract_id = contract.id
+            # Step 1: Generate contract ID upfront (before any DB operations)
+            contract_id = uuid4()
             
-            # Save file to disk
+            # Step 2: Save file to disk FIRST (before creating DB record)
             logger.info(f"Saving contract file: {filename}")
             file_path = self.file_manager.save_contract_file(
                 tenant_id=tenant_id,
@@ -98,33 +89,57 @@ class ContractService:
                 original_filename=filename
             )
             
-            contract.file_path = file_path
+            if not file_path:
+                raise ValueError("File save returned empty path")
+            
+            logger.info(f"File saved successfully: {file_path}")
+            
+            # Step 3: Now create contract record with file_path already set
+            contract = Contract(
+                id=contract_id,
+                tenant_id=tenant_id,
+                uploaded_by=user_id,
+                filename=filename,
+                counterparty_name=request.counterparty_name,
+                contract_type=request.contract_type,
+                file_path=file_path,  # Already has value - no NULL violation
+                status=ContractStatus.UPLOADED,
+            )
+            
+            self.db.add(contract)
             self.db.commit()
             
-            # Log upload event
-            self.audit.log(
+            logger.info(f"Contract {contract_id} created and file saved to {file_path}")
+            
+            # Step 4: Log upload event (use fresh session since previous one committed)
+            self.audit.log_event(
+                db=self.db,
                 tenant_id=tenant_id,
                 user_id=user_id,
                 event_type="contract_upload",
                 action="upload",
                 status="success",
-                description=f"Contract uploaded: {filename}"
+                description=f"Contract uploaded: {filename} → {file_path}"
             )
-            
-            logger.info(f"Contract {contract_id} created and file saved")
             
             return self._to_contract_response(contract)
             
         except Exception as e:
             logger.error(f"Failed to upload contract: {str(e)}")
-            self.audit.log(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                event_type="contract_upload",
-                action="upload",
-                status="failure",
-                description=f"Failed to upload contract: {str(e)}"
-            )
+            try:
+                self.db.rollback()
+                self.audit.log_event(
+                    db=self.db,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    event_type="contract_upload",
+                    action="upload",
+                    status="failure",
+                    description=f"Failed to upload contract: {str(e)}"
+                )
+            except Exception as audit_error:
+                logger.error(f"Failed to log audit event: {str(audit_error)}")
+            
             raise
     
     async def analyze_contract(

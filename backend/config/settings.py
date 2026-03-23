@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 import os
+from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -50,10 +51,11 @@ class Settings(BaseSettings):
     # Bcrypt Configuration
     BCRYPT_ROUNDS: int = 12
     
-    MISTRAL_API_KEY: str
+    MISTRAL_API_KEY: str = ""
     
     class Config:
-        env_file = ".env"
+        # Use absolute path to .env in backend directory
+        env_file = str(Path(__file__).parent.parent / ".env")
         case_sensitive = True
 
 

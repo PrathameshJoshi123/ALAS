@@ -8,8 +8,14 @@ from uuid import UUID
 from typing import Optional
 
 from shared.database.db import get_db
-from shared.jwt_handler.jwt_utils import verify_token
 from shared.database.models import User
+from shared.auth.auth_dependency import get_current_user
+from shared.rbac.rbac_utils import (
+    require_permission,
+    require_any_permission,
+    check_permission,
+    check_own_resource_or_admin,
+)
 from services.contracts.schemas.contract_schemas import (
     ContractUploadRequest,
     ContractResponse,
@@ -26,59 +32,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/contracts", tags=["contracts"])
 
 
-def get_current_user(
-    request: Request,
-    db: Session = Depends(get_db)
-) -> User:
-    """
-    Extract and validate current user from Authorization header
-    
-    Returns:
-        User: Current authenticated user
-        
-    Raises:
-        HTTPException: If token is invalid or user not found
-    """
-    try:
-        # Extract token from Authorization header
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing or invalid Authorization header"
-            )
-        
-        token = auth_header.replace("Bearer ", "")
-        
-        # Verify token and get tenant/user info
-        payload = verify_token(token)
-        user_id = UUID(payload.get("user_id"))
-        tenant_id = UUID(payload.get("tenant_id"))
-        
-        # Fetch user from database
-        user = db.query(User).filter(
-            User.id == user_id,
-            User.tenant_id == tenant_id
-        ).first()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found"
-            )
-        
-        return user
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Token verification failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
-
-
 @router.post(
     "/upload",
     response_model=ContractResponse,
@@ -86,6 +39,7 @@ def get_current_user(
     responses={
         400: {"model": ErrorResponse, "description": "Invalid request"},
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden - insufficient permissions"},
         413: {"model": ErrorResponse, "description": "File too large"},
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
@@ -96,7 +50,8 @@ async def upload_contract(
     counterparty_name: Optional[str] = Form(None),
     contract_type: Optional[str] = Form(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    _ = Depends(require_permission("contracts", "view_contracts")),
 ) -> ContractResponse:
     """
     Upload a third-party contract PDF for analysis
@@ -130,10 +85,12 @@ async def upload_contract(
                 detail="Filename is required"
             )
         
-        if not file.filename.lower().endswith('.pdf'):
+        # Accept PDF and TXT files
+        allowed_exts = ('.pdf', '.txt')
+        if not file.filename.lower().endswith(allowed_exts):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only PDF files are supported"
+                detail="Only PDF and TXT files are supported"
             )
         
         # Limit file size to 50MB
@@ -181,6 +138,7 @@ async def upload_contract(
     response_model=ContractResponse,
     responses={
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden - insufficient permissions"},
         404: {"model": ErrorResponse, "description": "Contract not found"},
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
@@ -188,7 +146,8 @@ async def upload_contract(
 def get_contract(
     contract_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    _ = Depends(require_permission("contracts", "view_contracts")),
 ) -> ContractResponse:
     """
     Get contract metadata by ID
@@ -227,6 +186,7 @@ def get_contract(
     response_model=ContractListResponse,
     responses={
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden - insufficient permissions"},
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
 )
@@ -235,7 +195,8 @@ def list_contracts(
     page_size: int = 20,
     status: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    _ = Depends(require_permission("contracts", "view_contracts")),
 ) -> ContractListResponse:
     """
     List contracts for the current tenant with pagination
@@ -278,6 +239,7 @@ def list_contracts(
     response_model=RiskAnalysisResponse,
     responses={
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden - insufficient permissions"},
         404: {"model": ErrorResponse, "description": "Contract not found"},
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
@@ -285,7 +247,8 @@ def list_contracts(
 def get_risk_analysis(
     contract_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    _ = Depends(require_permission("contracts", "view_contracts")),
 ) -> RiskAnalysisResponse:
     """
     Get complete risk analysis for a contract with all clauses
@@ -331,6 +294,7 @@ def get_risk_analysis(
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden - insufficient permissions"},
         404: {"model": ErrorResponse, "description": "Contract not found"},
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
@@ -338,7 +302,9 @@ def get_risk_analysis(
 def delete_contract(
     contract_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    _ = Depends(require_any_permission("contracts", 
+        ["edit_contracts", "delete_own_drafts", "approve_contracts"])),
 ) -> None:
     """
     Delete a contract and all associated data
@@ -380,6 +346,7 @@ def delete_contract(
     status_code=status.HTTP_202_ACCEPTED,
     responses={
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden - insufficient permissions"},
         404: {"model": ErrorResponse, "description": "Contract not found"},
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
@@ -387,7 +354,9 @@ def delete_contract(
 async def analyze_contract(
     contract_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    _ = Depends(require_any_permission("contracts", 
+        ["review_drafts", "approve_contracts", "execute_contracts", "flag_risks"])),
 ) -> ContractAnalysisJobResponse:
     """
     Initiate contract analysis via DeepAgents orchestrator
@@ -421,12 +390,15 @@ async def analyze_contract(
         
         logger.info(f"Contract analysis initiated: {contract_id}")
         
+        from datetime import datetime
         return ContractAnalysisJobResponse(
             job_id=f"job_{contract_id}",
             contract_id=contract_id,
             status="processing",
             progress_percentage=0,
-            message="Analysis in progress: Extracting text, segmenting clauses, and analyzing risks..."
+            message="Analysis in progress: Extracting text, segmenting clauses, and analyzing risks...",
+            created_at=datetime.utcnow(),
+            completed_at=None
         )
         
     except ValueError as e:

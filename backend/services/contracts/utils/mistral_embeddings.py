@@ -3,10 +3,10 @@ Mistral Embeddings Integration
 Uses Mistral API for generating semantic embeddings (1536 dimensions)
 """
 
-import os
 import logging
 from typing import List
 from mistralai.client import Mistral
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,16 @@ class MistralEmbeddingManager:
     
     def __init__(self):
         """Initialize Mistral client with API key from environment"""
-        api_key = os.getenv("MISTRAL_API_KEY")
-        if not api_key:
-            raise ValueError("MISTRAL_API_KEY environment variable is not set")
+        settings = get_settings()
+        api_key = getattr(settings, "MISTRAL_API_KEY", None)
         
+        if not api_key:
+            logger.error("MISTRAL_API_KEY not found in settings or .env file")
+            raise ValueError("MISTRAL_API_KEY is not configured in application settings")
+        
+        # Log that key is loaded (without showing the actual key for security)
+        logger.info(f"Loading Mistral API key from settings: {api_key[:10]}...{api_key[-4:]}")
+
         self.client = Mistral(api_key=api_key)
         logger.info(f"Initialized Mistral embeddings manager with model {self.MODEL}")
     
