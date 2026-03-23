@@ -15,15 +15,15 @@ from datetime import datetime
 
 from deepagents import create_deep_agent
 from langchain_anthropic import ChatAnthropic
-from langchain_mistralai import ChatMistral
+from langchain_mistralai import ChatMistralAI
 from langgraph.checkpoint.memory import MemorySaver
 
 from shared.database.models import Contract, Clause, ClauseSeverity
 from sqlalchemy.orm import Session
 
-from .mistral_embeddings import get_mistral_embedder
-from .chromadb_manager import get_chromadb_manager
-from .paddle_ocr_extractor import get_ocr_extractor
+from services.contracts.utils.mistral_embeddings import get_mistral_embedder
+from services.contracts.utils.chromadb_manager import get_chromadb_manager
+from services.contracts.utils.paddle_ocr_extractor import get_ocr_extractor
 
 logger = logging.getLogger(__name__)
 

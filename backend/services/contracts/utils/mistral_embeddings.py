@@ -6,7 +6,7 @@ Uses Mistral API for generating semantic embeddings (1536 dimensions)
 import os
 import logging
 from typing import List
-from mistralai import Mistral
+from mistralai.client import Mistral
 
 logger = logging.getLogger(__name__)
 
