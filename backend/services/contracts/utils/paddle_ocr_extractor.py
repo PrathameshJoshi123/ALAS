@@ -61,7 +61,18 @@ class PaddleOCRExtractor:
             Dict with extracted text
         """
         try:
-            import pypdf
+            # Prefer pypdf, but support PyPDF2 as a compatibility fallback.
+            pdf_reader_cls = None
+            pdf_library_name = None
+            try:
+                import pypdf
+                pdf_reader_cls = pypdf.PdfReader
+                pdf_library_name = "pypdf"
+            except ImportError:
+                import PyPDF2
+                pdf_reader_cls = PyPDF2.PdfReader
+                pdf_library_name = "PyPDF2"
+
             from pathlib import Path
             
             pdf_path = Path(file_path)
@@ -73,7 +84,7 @@ class PaddleOCRExtractor:
             
             try:
                 with open(pdf_path, 'rb') as f:
-                    pdf_reader = pypdf.PdfReader(f)
+                    pdf_reader = pdf_reader_cls(f)
                     total_pages = len(pdf_reader.pages)
                     
                     for page_num, page in enumerate(pdf_reader.pages, 1):
@@ -89,7 +100,9 @@ class PaddleOCRExtractor:
                 
                 raw_text = '\n\n---PAGE BREAK---\n\n'.join(all_text)
                 
-                logger.info(f"Successfully extracted text from {total_pages} pages using pypdf fallback")
+                logger.info(
+                    f"Successfully extracted text from {total_pages} pages using {pdf_library_name} fallback"
+                )
                 
                 return {
                     'raw_text': raw_text,
@@ -97,7 +110,7 @@ class PaddleOCRExtractor:
                     'confidence_percentage': 95,
                     'pages': pages,
                     'total_pages': total_pages,
-                    'extraction_method': 'pypdf_fallback',
+                    'extraction_method': f'{pdf_library_name}_fallback',
                     'error': None
                 }
                 
@@ -115,7 +128,10 @@ class PaddleOCRExtractor:
                 }
                 
         except ImportError:
-            logger.error("pypdf not available - cannot extract text from PDF")
+            logger.error(
+                "Neither pypdf nor PyPDF2 is available - cannot extract text from PDF. "
+                "Install one of them, e.g. `pip install pypdf`."
+            )
             return {
                 'raw_text': '',
                 'confidence': 0.0,
@@ -123,7 +139,7 @@ class PaddleOCRExtractor:
                 'pages': [],
                 'total_pages': 0,
                 'extraction_method': 'unavailable',
-                'error': 'No text extraction method available'
+                'error': 'No text extraction method available (install pypdf or PyPDF2)'
             }
     
     def extract_from_pdf(self, file_path: str) -> Dict[str, Any]:

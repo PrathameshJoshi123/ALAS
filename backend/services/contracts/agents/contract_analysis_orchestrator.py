@@ -9,8 +9,9 @@ Coordinates the multi-stage contract analysis workflow:
 
 import logging
 import json
+import re
 from typing import Dict, List, Any, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime
 
 from deepagents import create_deep_agent
@@ -276,6 +277,20 @@ Please:
             # Step 3: Process agent output and store results
             logger.info("Step 4: Processing analysis results")
             analysis_data = self._parse_agent_output(result)
+            logger.info(
+                "Parse summary: captured_payloads=%s parsed_clauses=%s overall_risk_score=%s",
+                len(result.get('captured_payloads', []) if isinstance(result, dict) else []),
+                len(analysis_data.get('clauses', [])),
+                analysis_data.get('risk_scores', {}).get('overall_risk_score', 0)
+            )
+
+            captured_payload_count = len(result.get('captured_payloads', []) if isinstance(result, dict) else [])
+            parsed_clause_count = len(analysis_data.get('clauses', []))
+            if parsed_clause_count == 0 and captured_payload_count > 0:
+                raise ValueError(
+                    "Agent produced payloads but no clauses were parsed. "
+                    "Aborting update to avoid persisting empty analysis."
+                )
             
             # Step 4: Generate embeddings and store in ChromaDB
             logger.info("Step 5: Generating embeddings and storing in vector DB")
@@ -300,8 +315,21 @@ Please:
             
         except Exception as e:
             logger.error(f"Contract analysis failed: {str(e)}", exc_info=True)
-            contract.status = ContractStatus.ANALYSIS_FAILED
-            self.db.commit()
+            try:
+                contract.status = ContractStatus.ANALYSIS_FAILED
+                self.db.commit()
+            except Exception as status_error:
+                # Some databases may not yet have the new enum value.
+                self.db.rollback()
+                logger.warning(
+                    "Could not persist analysis_failed status (likely enum mismatch): %s",
+                    str(status_error)
+                )
+                try:
+                    contract.status = ContractStatus.PROCESSING
+                    self.db.commit()
+                except Exception:
+                    self.db.rollback()
             
             return {
                 'status': 'failed',
@@ -320,60 +348,227 @@ Please:
             Dict with structured analysis data
         """
         try:
-            # Extract messages from agent result
-            # Handle both invoke format (direct messages key) and streaming format (node-based states)
-            messages = []
-            
-            if 'messages' in agent_result and isinstance(agent_result['messages'], list):
-                # Direct messages format from invoke()
-                messages = agent_result['messages']
-            else:
-                # Streaming format: result has node names as keys (model_request, tools, etc.)
-                # Extract messages from all nodes
-                for node_name, node_state in agent_result.items():
-                    if isinstance(node_state, dict) and 'messages' in node_state:
-                        node_messages = node_state.get('messages', [])
-                        if isinstance(node_messages, list):
-                            messages.extend(node_messages)
-            
-            if not messages:
-                logger.warning("No messages found in agent result")
-                return {'clauses': [], 'error': 'No agent output', 'analysis_mode': 'fallback'}
-            
-            # Extract content from the last message
-            last_message = messages[-1]
-            content = last_message.content if hasattr(last_message, 'content') else str(last_message)
-            
-            logger.debug(f"Last message content preview: {str(content)[:200]}...")
-            
-            # Try to parse JSON from content
-            # Find JSON blocks in the content
-            import re
-            json_matches = re.findall(r'\{.*?\}', content, re.DOTALL)
-            
             analysis_data = {
                 'clauses': [],
                 'risk_scores': {},
                 'recommendations': []
             }
-            
-            # Parse each JSON block
-            for json_str in json_matches:
-                try:
-                    parsed = json.loads(json_str)
-                    if 'clauses' in parsed:
-                        analysis_data['clauses'].extend(parsed['clauses'])
-                    if 'overall_risk_score' in parsed:
-                        analysis_data['risk_scores'] = parsed
-                except json.JSONDecodeError:
-                    continue
-            
+
+            text_payloads = self._collect_text_payloads(agent_result)
+            if not text_payloads:
+                logger.warning("No textual payloads found in agent result")
+                return {'clauses': [], 'error': 'No agent output', 'analysis_mode': 'fallback'}
+
+            clause_index: Dict[int, Dict[str, Any]] = {}
+            for payload in text_payloads:
+                for candidate in self._extract_json_candidates(payload):
+                    try:
+                        parsed = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        continue
+                    self._merge_parsed_payload(parsed, analysis_data, clause_index)
+
+            if clause_index:
+                analysis_data['clauses'] = [
+                    clause_index[k] for k in sorted(clause_index.keys())
+                ]
+
             logger.info(f"Parsed {len(analysis_data['clauses'])} clauses from agent output")
             return analysis_data
             
         except Exception as e:
             logger.error(f"Failed to parse agent output: {str(e)}", exc_info=True)
             return {'clauses': [], 'error': str(e), 'analysis_mode': 'fallback'}
+
+    def _collect_text_payloads(self, agent_result: Dict[str, Any]) -> List[str]:
+        """Collect text payloads from multiple DeepAgents result formats."""
+        payloads: List[str] = []
+
+        # Streaming collector payloads (preferred when available)
+        captured = agent_result.get('captured_payloads', [])
+        if isinstance(captured, list):
+            payloads.extend(str(p) for p in captured if p)
+
+        # Direct messages at top level
+        messages = agent_result.get('messages', [])
+        if isinstance(messages, list):
+            for msg in messages:
+                content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', None)
+                if content:
+                    if isinstance(content, (dict, list)):
+                        payloads.append(json.dumps(content, ensure_ascii=True))
+                    else:
+                        payloads.append(str(content))
+
+        # Nested final_state / node states
+        states_to_scan = []
+        final_state = agent_result.get('final_state')
+        if isinstance(final_state, dict):
+            states_to_scan.append(final_state)
+        if isinstance(agent_result, dict):
+            states_to_scan.append(agent_result)
+
+        for state in states_to_scan:
+            for node_state in state.values() if isinstance(state, dict) else []:
+                if not isinstance(node_state, dict):
+                    continue
+                node_messages = node_state.get('messages', [])
+                if not isinstance(node_messages, list):
+                    continue
+                for msg in node_messages:
+                    content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', None)
+                    if content:
+                        if isinstance(content, (dict, list)):
+                            payloads.append(json.dumps(content, ensure_ascii=True))
+                        else:
+                            payloads.append(str(content))
+
+        # Preserve order while deduplicating
+        deduped = list(dict.fromkeys(payloads))
+        return deduped
+
+    def _extract_json_candidates(self, text: str) -> List[str]:
+        """Extract likely JSON snippets from markdown/codefences/plain text."""
+        candidates: List[str] = []
+
+        if not text:
+            return candidates
+
+        # Prefer fenced JSON blocks when present
+        fence_matches = re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+        for block in fence_matches:
+            block = block.strip()
+            if block:
+                candidates.append(block)
+
+        # Fallback: scan balanced JSON objects/arrays from raw text
+        starts = [i for i, ch in enumerate(text) if ch in '{[']
+        for start in starts:
+            stack: List[str] = []
+            for i in range(start, len(text)):
+                ch = text[i]
+                if ch in '{[':
+                    stack.append(ch)
+                elif ch in '}]':
+                    if not stack:
+                        break
+                    opener = stack.pop()
+                    if (opener == '{' and ch != '}') or (opener == '[' and ch != ']'):
+                        break
+                    if not stack:
+                        snippet = text[start:i + 1].strip()
+                        if snippet:
+                            candidates.append(snippet)
+                        break
+
+        # Small dedupe to keep parser efficient
+        return list(dict.fromkeys(candidates))
+
+    def _merge_parsed_payload(
+        self,
+        payload: Any,
+        analysis_data: Dict[str, Any],
+        clause_index: Dict[int, Dict[str, Any]]
+    ) -> None:
+        """Merge parsed JSON payloads from subagents into unified analysis data."""
+
+        def upsert_clause(clause_like: Dict[str, Any]) -> None:
+            normalized = self._normalize_clause_payload(clause_like)
+            number = normalized['clause_number']
+            if number in clause_index:
+                clause_index[number].update({k: v for k, v in normalized.items() if v not in (None, '', [])})
+            else:
+                clause_index[number] = normalized
+
+        if isinstance(payload, dict):
+            if isinstance(payload.get('clauses'), list):
+                for c in payload['clauses']:
+                    if isinstance(c, dict):
+                        upsert_clause(c)
+
+            if isinstance(payload.get('legal_analysis'), list):
+                for item in payload['legal_analysis']:
+                    if isinstance(item, dict):
+                        upsert_clause(item)
+
+            if isinstance(payload.get('risk_analysis'), list):
+                for item in payload['risk_analysis']:
+                    if isinstance(item, dict):
+                        upsert_clause(item)
+
+            if isinstance(payload.get('validation_results'), list):
+                for item in payload['validation_results']:
+                    if isinstance(item, dict):
+                        upsert_clause(item)
+
+            if isinstance(payload.get('recommendations'), list):
+                analysis_data['recommendations'] = payload['recommendations']
+
+            if 'overall_risk_score' in payload:
+                analysis_data['risk_scores'].update({
+                    'overall_risk_score': payload.get('overall_risk_score', 0),
+                    'critical_issues': payload.get('critical_issues', 0),
+                    'high_issues': payload.get('high_issues', 0)
+                })
+
+        elif isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    upsert_clause(item)
+
+    def _normalize_clause_payload(self, clause_like: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize heterogeneous clause/risk JSON shapes into DB-ready clause schema."""
+        clause_number = clause_like.get('clause_number') or clause_like.get('clause_id') or clause_like.get('id') or 0
+        try:
+            clause_number = int(clause_number)
+        except Exception:
+            # Handles IDs like "CLAUSE_1" or "Clause-12".
+            number_match = re.search(r"(\d+)", str(clause_number))
+            clause_number = int(number_match.group(1)) if number_match else 0
+
+        risks = clause_like.get('risks') or []
+        first_risk = risks[0] if isinstance(risks, list) and risks and isinstance(risks[0], dict) else {}
+
+        severity = (
+            clause_like.get('severity')
+            or clause_like.get('risk_level')
+            or first_risk.get('severity')
+            or first_risk.get('risk_level')
+            or 'info'
+        )
+        severity = str(severity).lower()
+        if severity not in {'critical', 'high', 'medium', 'low', 'info'}:
+            severity = 'info'
+
+        confidence = clause_like.get('confidence_score') or clause_like.get('validation_confidence') or 0
+        try:
+            confidence = int(float(confidence))
+        except Exception:
+            confidence = 0
+
+        return {
+            'clause_number': clause_number,
+            'section_title': clause_like.get('section_title') or clause_like.get('section') or clause_like.get('heading'),
+            'clause_type': clause_like.get('clause_type') or clause_like.get('type'),
+            'raw_text': (
+                clause_like.get('raw_text')
+                or clause_like.get('clause_text')
+                or clause_like.get('text')
+                or clause_like.get('clause')
+                or clause_like.get('legal_reasoning')
+                or clause_like.get('risk_description')
+                or ''
+            ),
+            'severity': severity,
+            'risk_description': clause_like.get('risk_description') or first_risk.get('risk_description') or first_risk.get('description'),
+            'legal_reasoning': clause_like.get('legal_reasoning') or clause_like.get('validation_notes') or first_risk.get('legal_reasoning'),
+            'confidence_score': confidence,
+            'applicable_statute': clause_like.get('applicable_statute') or first_risk.get('applicable_statute'),
+            'statute_section': clause_like.get('statute_section') or first_risk.get('statute_section'),
+            'is_standard': bool(clause_like.get('is_standard', True)),
+            'is_missing_mandatory': bool(clause_like.get('is_missing_mandatory', False)),
+            'is_jurisdiction_mismatch': bool(clause_like.get('is_jurisdiction_mismatch', False)),
+        }
     
     def _create_fallback_analysis(self, raw_text: str) -> Dict[str, Any]:
         """
@@ -445,6 +640,8 @@ Please:
         api_call_count = 0
         subagent_states = {}
         final_state = None
+        collected_messages = []
+        captured_payloads: List[str] = []
         
         logger.info(f"🚀 Starting streamed analysis for contract {contract_id}")
         logger.info("=" * 80)
@@ -462,9 +659,22 @@ Please:
                 subgraphs=True,
                 version="v2"
             ):
-                chunk_type = chunk.get("type")
-                namespace = chunk.get("ns", ())
-                data = chunk.get("data")
+                chunk_type = None
+                namespace = ()
+                data = None
+
+                if isinstance(chunk, dict) and "type" in chunk and "data" in chunk:
+                    chunk_type = chunk.get("type")
+                    namespace = chunk.get("ns", ())
+                    data = chunk.get("data")
+                elif isinstance(chunk, tuple) and len(chunk) == 2:
+                    # LangGraph native stream format: (namespace, updates)
+                    namespace, data = chunk
+                    chunk_type = "updates"
+                elif isinstance(chunk, dict):
+                    # Some stream modes emit node updates directly
+                    chunk_type = "updates"
+                    data = chunk
                 
                 # Determine if this is from main agent or subagent
                 is_subagent = any(s.startswith("tools:") for s in namespace)
@@ -481,7 +691,7 @@ Please:
                     final_state = data
                     
                     for node_name, node_data in data.items():
-                        if node_name == "model_request":
+                        if node_name == "model_request" or "model" in str(node_name).lower():
                             api_call_count += 1
                             
                             # Log agent's thinking/reasoning
@@ -495,9 +705,12 @@ Please:
                                 if isinstance(node_data, dict):
                                     messages = node_data.get("messages", [])
                                     for msg in messages:
+                                        collected_messages.append(msg)
                                         if hasattr(msg, 'type') and msg.type == 'ai' and hasattr(msg, 'content'):
                                             content_preview = str(msg.content)[:150]
                                             thinking += f"\n  └─ Reasoning: {content_preview}..."
+                                            if getattr(msg, 'content', None):
+                                                captured_payloads.append(str(msg.content))
                             except Exception as e:
                                 logger.debug(f"Could not extract message details: {e}")
                             
@@ -508,6 +721,7 @@ Please:
                             if isinstance(node_data, dict):
                                 messages = node_data.get("messages", [])
                                 for msg in messages:
+                                    collected_messages.append(msg)
                                     if hasattr(msg, 'type') and msg.type == "tool":
                                         tool_name = getattr(msg, 'name', 'unknown')
                                         tool_id = getattr(msg, 'tool_call_id', '')
@@ -518,6 +732,11 @@ Please:
                                             # Task tool returns subagent descriptions
                                             content_preview = str(content)[:200] if content else "N/A"
                                             logger.info(f"[{source}] 📋 TASK_SPAWNED: {content_preview[:100]}...")
+                                            if content:
+                                                if isinstance(content, (dict, list)):
+                                                    captured_payloads.append(json.dumps(content, ensure_ascii=True))
+                                                else:
+                                                    captured_payloads.append(str(content))
                                         elif tool_name == "write_todos":
                                             # This is internal planning - show briefly
                                             logger.debug(f"[{source}] 📝 PLANNING_STEP")
@@ -564,7 +783,11 @@ Please:
         logger.info("-" * 80)
         
         # Return the final state as the result
-        return final_state or {"messages": []}
+        return {
+            "messages": collected_messages,
+            "captured_payloads": captured_payloads,
+            "final_state": final_state or {}
+        }
     
     async def _store_clauses_with_embeddings(
         self,
@@ -581,10 +804,25 @@ Please:
             clauses: List of clause dictionaries with analysis
         """
         try:
-            clause_texts = [c.get('raw_text', '') for c in clauses]
-            if not clause_texts:
+            # Keep only clauses with meaningful text to satisfy DB model constraints.
+            cleaned_clauses = []
+            for c in clauses:
+                raw_text = str(c.get('raw_text', '')).strip()
+                if not raw_text:
+                    continue
+                c['raw_text'] = raw_text
+                cleaned_clauses.append(c)
+
+            if not cleaned_clauses:
                 logger.warning("No clause texts to embed")
                 return
+
+            # Clear previous clause rows only when we have valid replacements.
+            self.db.query(Clause).filter(Clause.contract_id == contract_id).delete()
+            self.db.flush()
+
+            clause_texts = [c['raw_text'] for c in cleaned_clauses]
+            logger.info("Prepared %s clauses for embedding and persistence", len(clause_texts))
             
             # Generate embeddings in batch (more efficient)
             logger.info(f"Generating embeddings for {len(clause_texts)} clauses")
@@ -594,8 +832,8 @@ Please:
             chromadb_additions = []
             postgres_clauses = []
             
-            for i, (clause_data, embedding) in enumerate(zip(clauses, embeddings)):
-                clause_id = UUID(int=0)  # Generate proper UUID in actual implementation
+            for i, (clause_data, embedding) in enumerate(zip(cleaned_clauses, embeddings)):
+                clause_id = uuid4()
                 
                 # Prepare ChromaDB data
                 chromadb_additions.append({
@@ -621,7 +859,7 @@ Please:
                     clause_type=clause_data.get('clause_type'),
                     section_title=clause_data.get('section_title'),
                     raw_text=clause_data.get('raw_text', ''),
-                    severity=ClauseSeverity(clause_data.get('severity', 'info')),
+                    severity=ClauseSeverity(str(clause_data.get('severity', 'info')).lower()),
                     risk_description=clause_data.get('risk_description'),
                     legal_reasoning=clause_data.get('legal_reasoning'),
                     confidence_score=clause_data.get('confidence_score', 0),
@@ -634,18 +872,25 @@ Please:
                 )
                 postgres_clauses.append(clause_obj)
             
-            # Store in ChromaDB
-            if chromadb_additions:
-                logger.info(f"Adding {len(chromadb_additions)} clauses to ChromaDB")
-                self.chromadb.add_clauses_batch(chromadb_additions)
-            
             # Store in PostgreSQL
             if postgres_clauses:
                 logger.info(f"Adding {len(postgres_clauses)} clauses to PostgreSQL")
                 self.db.add_all(postgres_clauses)
                 self.db.commit()
+
+            # Store in ChromaDB (best effort). DB persistence is primary source of truth.
+            if chromadb_additions:
+                try:
+                    logger.info(f"Adding {len(chromadb_additions)} clauses to ChromaDB")
+                    self.chromadb.add_clauses_batch(chromadb_additions)
+                except Exception as chroma_error:
+                    logger.warning(
+                        "ChromaDB insert failed, but PostgreSQL clauses were saved: %s",
+                        str(chroma_error)
+                    )
             
         except Exception as e:
+            self.db.rollback()
             logger.error(f"Failed to store clauses with embeddings: {str(e)}")
             raise
     
@@ -686,7 +931,7 @@ Please:
             risk_scores = analysis_data.get('risk_scores', {})
             contract.overall_risk_score = risk_scores.get('overall_risk_score', 0)
             
-            contract.status = "analyzed"
+            contract.status = ContractStatus.ANALYZED
             contract.updated_at = datetime.utcnow()
             
             self.db.commit()

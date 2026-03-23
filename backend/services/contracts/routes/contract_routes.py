@@ -289,6 +289,40 @@ def get_risk_analysis(
         )
 
 
+@router.post(
+    "/{contract_id}/risk-analysis",
+    response_model=RiskAnalysisResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden - insufficient permissions"},
+        404: {"model": ErrorResponse, "description": "Contract not found"},
+        500: {"model": ErrorResponse, "description": "Internal server error"}
+    }
+)
+def get_risk_analysis_post_alias(
+    contract_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _ = Depends(require_permission("contracts", "view_contracts")),
+) -> RiskAnalysisResponse:
+    """Compatibility alias for clients sending POST to the read-only risk-analysis endpoint."""
+    try:
+        service = get_contract_service(db)
+        return service.get_risk_analysis(contract_id, current_user.tenant_id)
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to get risk analysis (POST alias): {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve risk analysis"
+        )
+
+
 @router.delete(
     "/{contract_id}",
     status_code=status.HTTP_204_NO_CONTENT,
