@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Cookies from "js-cookie";
 import { useAuthStore } from "@/store/authStore";
 import Sidebar from "@/components/dashboard/Sidebar";
 import Header from "@/components/dashboard/Header";
@@ -29,25 +28,20 @@ export default function DashboardLayout({
 
   if (!mounted || isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-50">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-600">Loading dashboard...</p>
-        </div>
+      <div className="flex flex-col items-center justify-center min-h-screen bg-white">
+        <div className="w-12 h-12 border-4 border-[#eef3fe] border-t-[#3b5fe5] rounded-full animate-spin mb-4"></div>
       </div>
     );
   }
 
-  if (!isAuthenticated) {
-    return null;
-  }
+  if (!isAuthenticated) return null;
 
   return (
-    <div className="flex h-screen bg-slate-50">
-      <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header />
-        <main className="flex-1 overflow-auto">{children}</main>
+    <div className="flex flex-col h-screen bg-white text-slate-900 font-sans">
+      <Header />
+      <div className="flex-1 flex overflow-hidden">
+        <Sidebar />
+        <main className="flex-1 overflow-auto bg-white">{children}</main>
       </div>
     </div>
   );
