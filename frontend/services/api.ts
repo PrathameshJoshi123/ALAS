@@ -58,8 +58,38 @@ class APIClient {
   }
 
   // Auth endpoints
+  async getTenants() {
+    const response = await this.client.get("/api/auth/tenants");
+    return response.data;
+  }
+
+  async registerUser(data: {
+    tenant_id: string;
+    email: string;
+    password: string;
+    name: string;
+  }) {
+    // 1. Signup user
+    await this.client.post("/api/auth/signup", {
+      tenant_id: data.tenant_id,
+      email: data.email,
+      password: data.password,
+      name: data.name,
+    });
+
+    // 2. Auto login
+    const loginResponse = await this.client.post("/api/auth/login", {
+      tenant_id: data.tenant_id,
+      email: data.email,
+      password: data.password,
+    });
+    return loginResponse.data;
+  }
+
   async signup(data: {
     company_name: string;
+    industry: string;
+    subscription_tier: string;
     email: string;
     password: string;
     name: string;
@@ -67,7 +97,8 @@ class APIClient {
     // 1. Create tenant
     const tenantRes = await this.client.post("/api/auth/tenants", {
       company_name: data.company_name,
-      industry: "Legal",
+      industry: data.industry,
+      subscription_tier: data.subscription_tier,
     });
     const tenantId = tenantRes.data.id;
 

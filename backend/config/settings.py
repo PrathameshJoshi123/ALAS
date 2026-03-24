@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # CORS Configuration
-    ALLOWED_ORIGINS: list = ["http://localhost:3000", "http://localhost:8000"]
+    ALLOWED_ORIGINS: list = ["http://localhost:3001", "http://localhost:8000"]
     
     # Audit Configuration
     ENABLE_AUDIT_LOGGING: bool = True

@@ -108,6 +108,27 @@ def create_tenant(
             detail=str(e)
         )
 
+@router.get("/tenants", response_model=List[TenantResponse])
+def get_tenants(
+    db: Session = Depends(get_db)
+):
+    """
+    Get all tenants
+    
+    Returns a list of all registered tenants.
+    """
+    try:
+        auth_service = get_auth_service(db)
+        tenants = auth_service.get_all_tenants()
+        return tenants
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve tenants"
+        )
+
+
 
 # ==================== AUTHENTICATION ENDPOINTS ====================
 
