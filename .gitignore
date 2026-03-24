@@ -3,3 +3,5 @@ docs/
 venv/
 __pycache__/
 *.pyc
+files/
+chromadb_data/
