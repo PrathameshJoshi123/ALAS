@@ -117,7 +117,15 @@ Output must be valid JSON for each clause with:
     "is_standard": bool,
     "is_missing_mandatory": bool,
     "is_jurisdiction_mismatch": bool
-}""",
+}
+
+Additionally, if a mandatory protection is missing (for example IP ownership, indemnity,
+liability cap, dispute resolution mechanism, force majeure, or acceptance criteria),
+emit a synthetic finding with:
+- clause_type starting with "Missing "
+- severity set based on impact
+- is_missing_mandatory = true
+- risk_description and legal_reasoning explaining the business/legal impact.""",
             "tools": []
         }
         
@@ -277,6 +285,10 @@ Please:
             # Step 3: Process agent output and store results
             logger.info("Step 4: Processing analysis results")
             analysis_data = self._parse_agent_output(result)
+            analysis_data = self._augment_with_missing_mandatory_clauses(
+                raw_text=raw_text,
+                analysis_data=analysis_data
+            )
             logger.info(
                 "Parse summary: captured_payloads=%s parsed_clauses=%s overall_risk_score=%s",
                 len(result.get('captured_payloads', []) if isinstance(result, dict) else []),
@@ -619,6 +631,104 @@ Please:
                 'error': str(e),
                 'analysis_mode': 'failed'
             }
+
+    def _augment_with_missing_mandatory_clauses(
+        self,
+        raw_text: str,
+        analysis_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Add synthetic risk findings for missing mandatory legal protections."""
+        clauses = analysis_data.get('clauses', []) or []
+        all_text = "\n".join(
+            [raw_text] + [str(c.get('raw_text', '')) for c in clauses]
+        ).lower()
+
+        def has_any(patterns: List[str]) -> bool:
+            return any(re.search(p, all_text, re.IGNORECASE) for p in patterns)
+
+        # Core completeness checks for commercial software/service contracts.
+        checks = [
+            {
+                "name": "Missing IP Ownership",
+                "severity": "high",
+                "patterns": [r"intellectual\s+property", r"\bip\b", r"ownership\s+of\s+(work|software|deliverables|source\s*code)"] ,
+                "risk": "Ownership of created software/work product is not clearly defined.",
+                "reasoning": "Absence of IP ownership terms can cause future disputes over reuse, licensing, and commercialization rights."
+            },
+            {
+                "name": "Missing Indemnity",
+                "severity": "high",
+                "patterns": [r"indemnif(y|ication)", r"hold\s+harmless"],
+                "risk": "No indemnity allocation for third-party claims or legal losses.",
+                "reasoning": "Indemnity provisions are standard for allocating claim risk between parties."
+            },
+            {
+                "name": "Missing Liability Cap",
+                "severity": "medium",
+                "patterns": [r"liability\s+shall\s+not\s+exceed", r"aggregate\s+liability", r"cap\s+on\s+liability", r"limited\s+to\s+(fees|contract\s+value|amount\s+paid)"],
+                "risk": "No explicit maximum liability cap is defined.",
+                "reasoning": "Exclusion of indirect damages alone is not a substitute for an aggregate liability limit."
+            },
+            {
+                "name": "Missing Dispute Resolution",
+                "severity": "medium",
+                "patterns": [r"arbitration", r"jurisdiction", r"courts?\s+of", r"venue", r"dispute\s+resolution"],
+                "risk": "No clear mechanism/forum for dispute resolution is defined.",
+                "reasoning": "Governing law without venue/arbitration process leaves procedural ambiguity during disputes."
+            },
+            {
+                "name": "Missing Force Majeure",
+                "severity": "medium",
+                "patterns": [r"force\s+majeure", r"act\s+of\s+god", r"beyond\s+(reasonable\s+)?control"],
+                "risk": "No force majeure protection for unforeseen events.",
+                "reasoning": "Contracts should define obligations and relief when events beyond control disrupt performance."
+            },
+            {
+                "name": "Missing Deliverables Acceptance Criteria",
+                "severity": "medium",
+                "patterns": [r"acceptance\s+criteria", r"acceptance\s+test", r"milestone", r"delivery\s+schedule", r"timeline"],
+                "risk": "Deliverable acceptance standards and timeline controls are not explicit.",
+                "reasoning": "Undefined acceptance terms increase scope and payment disputes."
+            },
+        ]
+
+        # Governing law alone does not satisfy dispute resolution quality.
+        has_governing_law = has_any([r"governing\s+law", r"laws?\s+of\s+india"])
+
+        max_clause_no = 0
+        for c in clauses:
+            try:
+                max_clause_no = max(max_clause_no, int(c.get('clause_number', 0)))
+            except Exception:
+                continue
+
+        for check in checks:
+            present = has_any(check["patterns"])
+            if check["name"] == "Missing Dispute Resolution" and has_governing_law and not present:
+                pass
+
+            if present:
+                continue
+
+            max_clause_no += 1
+            clauses.append({
+                'clause_number': max_clause_no,
+                'section_title': 'Missing Mandatory Clause',
+                'clause_type': check['name'],
+                'raw_text': f"Mandatory clause missing: {check['name']}",
+                'severity': check['severity'],
+                'risk_description': check['risk'],
+                'legal_reasoning': check['reasoning'],
+                'confidence_score': 92,
+                'applicable_statute': 'Indian Contract Act 1872',
+                'statute_section': None,
+                'is_standard': False,
+                'is_missing_mandatory': True,
+                'is_jurisdiction_mismatch': False,
+            })
+
+        analysis_data['clauses'] = clauses
+        return analysis_data
     
     def _stream_analyze_contract(
         self,
@@ -929,7 +1039,15 @@ Please:
             
             # Calculate overall risk score
             risk_scores = analysis_data.get('risk_scores', {})
-            contract.overall_risk_score = risk_scores.get('overall_risk_score', 0)
+            model_risk_score = risk_scores.get('overall_risk_score', 0)
+            computed_risk_score = min(
+                100,
+                severity_count['critical'] * 30
+                + severity_count['high'] * 18
+                + severity_count['medium'] * 10
+                + severity_count['low'] * 4
+            )
+            contract.overall_risk_score = max(model_risk_score, computed_risk_score)
             
             contract.status = ContractStatus.ANALYZED
             contract.updated_at = datetime.utcnow()
