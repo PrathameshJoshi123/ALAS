@@ -28,7 +28,7 @@ export default function ContractsPage() {
       try {
         setLoading(true);
         const data = await apiClient.getContracts(page, 10);
-        setContracts(data.items || []);
+        setContracts(data.contracts || []);
         setTotalPages(Math.ceil((data.total || 0) / 10));
       } catch (error) {
         console.error("Failed to fetch contracts:", error);

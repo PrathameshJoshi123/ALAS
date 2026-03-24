@@ -325,3 +325,27 @@ class Clause(Base):
         Index("idx_clause_contract_severity", "contract_id", "severity", unique=False),
         Index("idx_clause_tenant_type", "tenant_id", "clause_type", unique=False),
     )
+
+
+class LegalWebSearch(Base):
+    """
+    LegalWebSearch - cached web search results used to provide statutory
+    and precedent context to the legal reasoning subagent.
+
+    Stores the original query, a JSON blob of results, the tenant that requested
+    the search and a timestamp for cache expiry / inspection.
+    """
+    __tablename__ = "legal_web_search"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
+    query = Column(String(1024), nullable=False, index=True)
+    results = Column(JSON, nullable=False)
+    source = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    tenant = relationship("Tenant", foreign_keys=[tenant_id])
+
+    __table_args__ = (
+        Index("idx_legalweb_tenant_query", "tenant_id", "query", unique=False),
+    )

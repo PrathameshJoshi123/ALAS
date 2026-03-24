@@ -193,7 +193,7 @@ def get_contract(
 def list_contracts(
     page: int = 1,
     page_size: int = 20,
-    status: Optional[str] = None,
+    contract_status: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _ = Depends(require_permission("contracts", "view_contracts")),
@@ -223,7 +223,7 @@ def list_contracts(
             tenant_id=current_user.tenant_id,
             page=page,
             page_size=page_size,
-            status=status
+            status=contract_status
         )
         
     except Exception as e:

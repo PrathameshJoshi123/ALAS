@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from services.contracts.utils.mistral_embeddings import get_mistral_embedder
 from services.contracts.utils.chromadb_manager import get_chromadb_manager
 from services.contracts.utils.paddle_ocr_extractor import get_ocr_extractor
+from services.contracts.utils.web_search import search_and_cache
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -55,7 +56,7 @@ class ContractAnalysisOrchestrator:
         
         logger.info("Initialized Contract Analysis Orchestrator")
     
-    def create_analysis_graph(self) -> Any:
+    def create_analysis_graph(self, web_search_context: Optional[str] = None) -> Any:
         """
         Create the main contract analysis orchestration graph with subagents
         
@@ -177,8 +178,18 @@ You have access to:
 - ChromaDB for storing and retrieving clause vectors
 - Subagents for specialized analysis tasks
 
-Maintain context throughout the workflow and ensure data consistency."""
+Maintain context throughout the workflow and ensure data consistency.
+
+ExternalLegalContext:
+{web_search_context}
+"""
         
+        # Format prompt with any external web context provided
+        try:
+            orchestrator_prompt = orchestrator_prompt.format(web_search_context=(web_search_context or "No external web context available."))
+        except Exception:
+            pass
+
         # Create main orchestrator agent with subagents
         agent = create_deep_agent(
             name="contract-analyzer",
@@ -235,9 +246,23 @@ Maintain context throughout the workflow and ensure data consistency."""
             contract.status = ContractStatus.PROCESSING
             self.db.commit()
             
-            # Step 2: Create and invoke analysis agent
-            logger.info("Step 2: Creating analysis orchestrator agent")
-            agent = self.create_analysis_graph()
+            # Step 2: Enrich with web-based legal context and create agent
+            logger.info("Step 2: Performing web search for legal context (ddgs)")
+            try:
+                web_results = search_and_cache(self.db, tenant_id, "Indian contract law " + (contract.contract_type or ""), max_results=5)
+            except Exception:
+                web_results = []
+
+            # Build a short textual summary of results to pass into the orchestrator
+            web_context_snippets = []
+            for r in (web_results or [])[:5]:
+                title = r.get("title") or r.get("href") or ""
+                body = r.get("body") or r.get("snippet") or ""
+                web_context_snippets.append(f"- {title}: {body}")
+            web_context = "\n".join(web_context_snippets) if web_context_snippets else "No external web context available."
+
+            logger.info("Step 3: Creating analysis orchestrator agent")
+            agent = self.create_analysis_graph(web_search_context=web_context)
             
             # Prepare input for agent
             analysis_prompt = f"""Analyze this contract text and provide comprehensive risk analysis.
