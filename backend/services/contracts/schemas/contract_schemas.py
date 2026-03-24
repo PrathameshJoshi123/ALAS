@@ -3,7 +3,7 @@ Pydantic schemas for Contract Service requests and responses
 Following the same pattern as Auth Service schemas
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
@@ -16,11 +16,23 @@ class ContractStatusEnum(str, Enum):
     """Contract lifecycle statuses"""
     UPLOADED = "uploaded"
     PROCESSING = "processing"
+    ANALYZING = "analyzing"
     ANALYZED = "analyzed"
+    ANALYSIS_FAILED = "analysis_failed"
     REVIEW_PENDING = "review_pending"
     APPROVED = "approved"
     REJECTED = "rejected"
     ARCHIVED = "archived"
+    
+    @classmethod
+    def _missing_(cls, value):
+        """Handle case-insensitive enum lookups and stale enum references"""
+        if isinstance(value, str):
+            # Try case-insensitive match
+            for member in cls:
+                if member.value.lower() == value.lower():
+                    return member
+        return None
 
 
 class ClauseSeverityEnum(str, Enum):
@@ -50,6 +62,14 @@ class ContractUploadRequest(BaseModel):
 
 # ==================== RESPONSE SCHEMAS ====================
 
+class SourceCitation(BaseModel):
+    """Schema for legal source citations (statute references)"""
+    title: str = Field(..., description="Title of the statute or legal reference")
+    url: str = Field(..., description="URL to the full statute text (e.g., indiacode.nic.in)")
+    body: Optional[str] = Field(None, description="Excerpt from the statute relevant to the clause")
+    section: Optional[str] = Field(None, description="Specific statute section cited (e.g., 'Section 37')")
+
+
 class ClauseResponse(BaseModel):
     """Schema for individual clause response"""
     id: UUID
@@ -66,6 +86,7 @@ class ClauseResponse(BaseModel):
     is_jurisdiction_mismatch: bool
     applicable_statute: Optional[str]
     statute_section: Optional[str]
+    sources: Optional[List[SourceCitation]] = Field(None, description="Statute references and legal sources")
     created_at: datetime
     
     class Config:
@@ -91,6 +112,25 @@ class ClauseResponse(BaseModel):
         }
 
 
+class SuggestionDetail(BaseModel):
+    """Schema for a single clause suggestion"""
+    clause_type: str
+    title: str
+    purpose: str
+    difficulty: int = Field(..., ge=1, le=5)
+    priority: str
+
+
+class DetailedSuggestions(BaseModel):
+    """Schema for detailed contract improvement suggestions"""
+    total_suggestions: int
+    gaps_identified: int
+    improvement_potential: int = Field(..., ge=0, le=100)
+    tier_1_critical: List[SuggestionDetail] = []
+    tier_2_important: List[SuggestionDetail] = []
+    tier_3_recommended: List[SuggestionDetail] = []
+
+
 class RiskAnalysisResponse(BaseModel):
     """Schema for contract risk analysis summary"""
     contract_id: UUID
@@ -104,6 +144,7 @@ class RiskAnalysisResponse(BaseModel):
     clauses: List[ClauseResponse]
     analysis_summary: Optional[str]
     recommended_actions: Optional[List[str]]
+    detailed_suggestions: Optional[DetailedSuggestions] = None
     updated_at: datetime
     
     class Config:

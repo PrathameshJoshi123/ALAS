@@ -111,20 +111,6 @@ class AuthService:
             
             # Cache permissions in Redis
             self.redis.cache_role_permissions(role.id, tenant_id, permissions)
-
-    def get_all_tenants(self) -> list:
-        """
-        Get all tenants
-        
-        Returns:
-            list: List of Tenant objects
-        """
-        try:
-            return self.db.query(Tenant).all()
-        except Exception as e:
-            logger.error(f"Failed to get tenants: {str(e)}")
-            raise
-
     
     # ==================== USER SIGNUP ====================
     
