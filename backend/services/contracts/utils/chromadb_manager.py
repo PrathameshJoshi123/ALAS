@@ -153,7 +153,7 @@ class ChromaDBManager:
             ids = [str(c["clause_id"]) for c in clauses]
             documents = [c["clause_text"] for c in clauses]
             embeddings = [c["embedding"] for c in clauses]
-            metadatas = [c["metadata"] for c in clauses]
+            metadatas = [self._sanitize_metadata(c.get("metadata", {})) for c in clauses]
             
             self.clauses_collection.add(
                 ids=ids,
@@ -168,6 +168,23 @@ class ChromaDBManager:
         except Exception as e:
             logger.error(f"Failed to batch add clauses to ChromaDB: {str(e)}")
             raise
+
+    def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize metadata values to Chroma-compatible scalar types."""
+        safe: Dict[str, Any] = {}
+        for key, value in (metadata or {}).items():
+            k = str(key)
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                safe[k] = value
+                continue
+            if isinstance(value, UUID):
+                safe[k] = str(value)
+                continue
+            # Chroma metadata does not support nested objects/lists; stringify fallback.
+            safe[k] = str(value)
+        return safe
     
     def search_similar_clauses(
         self,
