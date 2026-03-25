@@ -77,7 +77,7 @@ export default function TemplatesPage() {
               </div>
 
               <button 
-                onClick={() => router.push("/dashboard/tenant-files?generating=true")}
+                onClick={() => router.push(`/dashboard/tenant-files?generating=true&prompt=${encodeURIComponent(prompt)}`)}
                 className="flex items-center gap-2.5 bg-[#152458] hover:bg-[#0B1437] text-white px-7 py-3.5 rounded-xl text-[13px] font-bold shadow-[0_8px_20px_rgba(21,36,88,0.2)] transition-all transform hover:-translate-y-0.5 z-20"
               >
                 Generate Contract <ArrowRight className="w-4 h-4" strokeWidth={2.5}/>

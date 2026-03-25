@@ -436,10 +436,18 @@ async def analyze_contract(
         )
         
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_msg
+            )
+        else:
+            logger.error(f"Processing error during analysis: {error_msg}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Analysis processing error: {error_msg}"
+            )
     except Exception as e:
         logger.error(f"Failed to analyze contract: {str(e)}")
         raise HTTPException(

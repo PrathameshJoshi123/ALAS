@@ -99,6 +99,20 @@ class AuthService:
             self.db.rollback()
             raise
     
+    def get_all_tenants(self) -> list[Tenant]:
+        """
+        Get all registered tenants
+        
+        Returns:
+            list[Tenant]: List of all tenant objects
+        """
+        try:
+            tenants = self.db.query(Tenant).order_by(Tenant.company_name).all()
+            return tenants
+        except Exception as e:
+            logger.error(f"Failed to get tenants: {str(e)}")
+            raise
+    
     def _create_default_roles(self, tenant_id: UUID):
         """Create default roles when tenant is created"""
         for role_name, permissions in DEFAULT_ROLES_DEFINITIONS.items():
