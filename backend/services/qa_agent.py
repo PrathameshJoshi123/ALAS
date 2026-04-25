@@ -296,45 +296,6 @@ def answer_question(question: str, md_file_path: str = None) -> dict:
             preview = str(answer)[:200] if isinstance(answer, str) else str(answer)[:200]
             logger.debug(f"[QA] Answer preview: {preview}...")
         
-        # Store Q&A in memory
-        try:
-            qa_entry = {
-                "id": qa_id,
-                "timestamp": datetime.now().isoformat(),
-                "question": question,
-                "answer": answer,
-                "source_file": current_md_file,
-            }
-            
-            logger.debug(f"[QA] Storing Q&A in memory with ID: {qa_id}")
-            
-            # Create Q&A record - simplified approach
-            qa_filename = f"qa_{qa_id}.md"
-            qa_content = f"""# Q&A Record
-
-**ID**: {qa_id}
-**Timestamp**: {qa_entry['timestamp']}
-**Source File**: {current_md_file}
-
-## Question
-{question}
-
-## Answer
-{answer}
-"""
-            
-            # Attempt to write to memory (don't fail if this doesn't work)
-            try:
-                agent.invoke({
-                    "input": f"Write this Q&A to memory: {qa_filename}: {qa_content}"
-                })
-                logger.info(f"[QA] ✓ Q&A stored in memory with ID: {qa_id}")
-            except Exception as mem_error:
-                logger.warning(f"[QA] ⚠ Failed to store Q&A in memory: {str(mem_error)}")
-            
-        except Exception as e:
-            logger.warning(f"[QA] ⚠ Error during Q&A storage: {str(e)}", exc_info=True)
-        
         result = {
             "success": True,
             "question": question,
