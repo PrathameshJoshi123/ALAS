@@ -5,3 +5,10 @@ __pycache__/
 *.pyc
 myenv/
 openapi.json
+venv/
+.env
+.langgraph_api/
+__pycache__/
+vectorstores/
+*.log
+archive/
