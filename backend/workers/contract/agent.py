@@ -53,37 +53,170 @@ def setup_logging(log_file: str = None):
 # Setup logging at module import time
 logger = setup_logging()
 
-system_prompt_text = """You are an expert contract lawyer with deep knowledge of Indian Contract Act.
+system_prompt_text = """You are an expert contract lawyer with deep knowledge of the Indian Contract Act.
 
-## WORKFLOW
+You must analyze contracts in a **chunked, memory-driven workflow** to ensure no detail is missed.
 
-1. **Understand Contract Type**: Read the contract briefly to identify its type (Supply Agreement, RFP, Service Agreement, etc.)
+All files are in markdown (.md).
 
-2. **Extract Indian Contract Act Requirements**: Use the act_extractor subagent to identify relevant Indian Contract Act sections for this contract type.
+---
 
-3. **Analyze Contract Details**: Use the file_analyzer subagent to read the complete contract and identify:
-   - Key clauses and obligations
-   - Risks and red flags
-   - Missing clauses
-   - Green flags (protective clauses)
-   - Financial terms
+## CORE WORKFLOW
 
-4. **Generate Final Report**: Create a comprehensive markdown analysis at `/memories/{contract_type}_final_analysis.md` with:
-   - Contract classification
-   - Parties and obligations
-   - Applicable Act sections
-   - Risk assessment (HIGH/MEDIUM/LOW)
-   - Red and green flags
-   - Missing clauses
-   - Top recommendations
-   - Overall assessment
+### STEP 1: Identify Contract Type
+- Read the beginning of the contract (first 300 lines).
+- Classify the contract type (e.g., Supply Agreement, Service Agreement, NDA, Employment Contract, etc.).
 
-## SUBAGENTS
+---
 
-- **act_extractor**: Extracts relevant Indian Contract Act sections for the contract type
-- **file_analyzer**: Reads and analyzes contract files, identifies risks, clauses, obligations
+### STEP 2: Iterative File Reading (MANDATORY)
 
-Use filesystem tools with virtual paths: /contracts/, /memories/, /skills/
+You MUST read the contract in chunks using the `read_file` tool with:
+- `offset` (starting line)
+- `limit = 300`
+
+#### Process:
+1. Start with offset = 0
+2. Read 300 lines at a time
+3. After each read:
+   - Analyze the chunk
+   - Extract **important findings dynamically**, including:
+     - Key clauses
+     - Obligations (party-wise)
+     - Financial terms
+     - Risks / red flags
+     - Protective clauses (green flags)
+     - Missing or vague terms
+     - Legal inconsistencies
+     - Any unusual or non-standard language
+
+4. Write findings into a temporary memory file:
+Use the `write_file` and `edit_file` tool to append findings to:
+/memories/temp_analysis.md
+
+
+5. IMPORTANT:
+- Always **append**, never overwrite
+- Structure each entry like:
+
+## Chunk {start_line}-{end_line}
+- Key Findings:
+- Risks:
+- Obligations:
+- Notes:
+
+6. Increase offset by 300 and repeat until end of file.
+
+---
+
+### STEP 3: Consolidate Learnings
+
+After the full contract is read:
+
+1. Read the complete file:
+
+/memories/temp_analysis.md
+
+
+2. Synthesize:
+- Repeated risks
+- Cross-clause conflicts
+- Missing protections
+- Overall contract structure
+
+---
+
+### STEP 4: Read Indian Contract Act Reference
+
+You MUST read:
+
+/contracts/indian_contract_law.md
+
+
+Then:
+- Identify relevant sections applicable to this contract
+- Map contract clauses to legal provisions
+- Highlight compliance gaps
+
+---
+
+### STEP 5: Final Report Generation
+
+Create a final structured markdown report at:
+
+
+/memories/final_analysis.md
+
+
+---
+
+## FINAL REPORT STRUCTURE
+
+### 1. Contract Classification
+- Type
+- Nature
+- Complexity level
+
+### 2. Parties & Key Obligations
+- Party A obligations
+- Party B obligations
+
+### 3. Financial & Commercial Terms
+- Payment structure
+- Penalties
+- Liabilities
+
+### 4. Applicable Indian Contract Act Sections
+- Relevant sections
+- Why they apply
+- Compliance status
+
+### 5. Risk Assessment
+- Overall Risk: HIGH / MEDIUM / LOW
+- Explanation
+
+### 6. Red Flags
+- Clearly explain legal and practical risks
+
+### 7. Green Flags
+- Protective clauses
+- Strong legal safeguards
+
+### 8. Missing Clauses
+- Critical omissions
+- Industry-standard expectations
+
+### 9. Top Recommendations
+- Actionable legal improvements
+- Risk mitigation strategies
+
+### 10. Overall Legal Assessment
+- Enforceability
+- Fairness
+- Commercial soundness
+
+---
+
+## STRICT RULES
+
+- NEVER read the full file at once
+- ALWAYS use chunked reading (300 lines per call)
+- ALWAYS append findings after each chunk
+- DO NOT skip the temp analysis step
+- DO NOT generate final report without reading:
+  1. Full contract (via chunks)
+  2. temp_analysis.md
+  3. indian_contract_act.md
+
+---
+
+## GOAL
+
+Act like a meticulous legal expert who:
+- Reads carefully in parts
+- Takes structured notes
+- Thinks holistically at the end
+- Produces a professional legal-grade analysis
 """
 
 
@@ -106,34 +239,6 @@ memories_dir.mkdir(parents=True, exist_ok=True)
 # AGENT CONFIGURATION
 # ==============================================================================
 
-# Define subagents for specialized tasks
-subagents = [
-    {
-        "name": "act_extractor",
-        "description": "Extracts relevant Indian Contract Act sections for the given contract type. Identifies which sections apply and saves requirements to /memories/act_requirements.md",
-        "system_prompt": """You are an Indian Contract Act expert. Your role is to:
-1. Identify relevant Indian Contract Act sections for the given contract type
-2. Explain how each section applies
-3. List key requirements from each section
-4. Save findings to /memories/act_requirements.md
-
-Be concise and cite specific sections.""",
-    },
-    {
-        "name": "file_analyzer",
-        "description": "Analyzes contract files to identify clauses, risks, obligations, and missing provisions. Saves detailed findings to /memories/contract_analysis.md",
-        "system_prompt": """You are a contract analysis specialist. Your role is to:
-1. Read the complete contract
-2. Identify key clauses and obligations for each party
-3. Flag risks and red flags with Act section references
-4. Identify protective clauses (green flags)
-5. List missing clauses that should be present
-6. Extract financial terms
-7. Save comprehensive findings to /memories/contract_analysis.md
-
-Be thorough and cite specific line numbers or clause references.""",
-    },
-]
 
 agent = create_deep_agent(
     model=llm,
@@ -146,7 +251,6 @@ agent = create_deep_agent(
         }
     ),
     skills=["./skills"],
-    subagents=subagents,
 )
 
 # 
@@ -159,59 +263,105 @@ def stream_agent_with_logging(
     log_file: str = None,
     stream_mode: list = None
 ) -> dict:
-    """
-    Stream agent execution with logging.
-    
-    Args:
-        user_message: The input message for the agent
-        log_file: Optional file path to save streaming log
-        stream_mode: Stream modes to use (default: ["updates", "messages"])
-        
-    Returns:
-        Dictionary with execution status
-    """
+
     if stream_mode is None:
-        stream_mode = ["updates", "messages"]
-    
+        stream_mode = ["updates", "messages", "custom"]
+
     logger_instance = logging.getLogger("contract_agent")
-    logger_instance.info(f"Starting contract analysis...")
-    
+    logger_instance.info("Starting contract analysis...")
+
+    current_source = None  # track main vs subagent
+    mid_line = False       # for clean token streaming
+
     try:
-        # Stream agent execution
         for chunk in agent.stream(
             {"messages": [{"role": "user", "content": user_message}]},
             stream_mode=stream_mode,
             subgraphs=True,
             version="v2",
         ):
-            chunk_type = chunk.get("type")
-            chunk_data = chunk.get("data")
-            
-            # Log updates (execution steps)
+            chunk_type = chunk["type"]
+            ns = chunk["ns"]
+            data = chunk["data"]
+
+            # 🔍 Identify source (main vs subagent)
+            is_subagent = any(s.startswith("tools:") for s in ns)
+            source = (
+                next((s for s in ns if s.startswith("tools:")), "main")
+                if is_subagent else "main"
+            )
+
+            # =========================
+            # 1. UPDATES (execution flow)
+            # =========================
             if chunk_type == "updates":
-                for node_name, node_data in chunk_data.items():
-                    logger_instance.info(f"Step: {node_name}")
-            
-            # Log messages (thinking and tool calls)
+                for node_name, node_data in data.items():
+
+                    logger_instance.info(f"[{source}] step → {node_name}")
+
+                    # 🔥 Deep inspect what's inside nodes
+                    if node_name == "model_request":
+                        msgs = node_data.get("messages", [])
+                        for msg in msgs:
+                            # Tool calls planned by model
+                            for tc in getattr(msg, "tool_calls", []):
+                                logger_instance.info(
+                                    f"[{source}] 🧠 planning tool → {tc['name']} | args: {tc['args']}"
+                                )
+
+                    elif node_name == "tools":
+                        msgs = node_data.get("messages", [])
+                        for msg in msgs:
+                            if msg.type == "tool":
+                                logger_instance.info(
+                                    f"[{source}] ✅ tool result → {msg.name}: {str(msg.content)[:200]}"
+                                )
+
+            # =========================
+            # 2. MESSAGE STREAM (tokens, tool calls)
+            # =========================
             elif chunk_type == "messages":
-                token, metadata = chunk_data
-                
-                # Log tool calls
-                if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
+                token, metadata = data
+
+                # 🧠 Tool call streaming (very important)
+                if getattr(token, "tool_call_chunks", None):
                     for tc in token.tool_call_chunks:
                         if tc.get("name"):
-                            logger_instance.info(f"Tool: {tc['name']}")
-                
-                # Log AI thinking/responses
+                            logger_instance.info(
+                                f"[{source}] 🔧 calling tool → {tc['name']}"
+                            )
+                        if tc.get("args"):
+                            logger_instance.info(
+                                f"[{source}]   ↳ args chunk → {tc['args']}"
+                            )
+
+                # ✅ Tool result messages
+                if token.type == "tool":
+                    logger_instance.info(
+                        f"[{source}] 📦 tool output → {token.name}: {str(token.content)[:200]}"
+                    )
+
+                # 💬 LLM token streaming (actual thinking / output)
                 if token.type == "ai" and token.content:
+                    if source != current_source:
+                        print(f"\n\n--- [{source}] ---\n", end="")
+                        current_source = source
+
                     print(token.content, end="", flush=True)
-    
+                    mid_line = True
+
+            # =========================
+            # 3. CUSTOM EVENTS (if tools emit progress)
+            # =========================
+            elif chunk_type == "custom":
+                logger_instance.info(f"[{source}] ⚡ custom event → {data}")
+
     except Exception as e:
         logger_instance.error(f"Error during streaming: {str(e)}", exc_info=True)
         raise
-    
+
     logger_instance.info("Contract analysis complete")
-    
+
     return {"status": "completed"}
 
 
