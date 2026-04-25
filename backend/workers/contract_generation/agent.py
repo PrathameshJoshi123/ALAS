@@ -128,6 +128,7 @@ All files are markdown (.md).
 ---
 
 ### STEP 4: DRAFT THE CONTRACT ITERATIVELY IN SECTIONS (MANDATORY - DRAFT MUST EXIST)
+use write file or edit_file to append to the generated contract file after drafting each section.
 **Goal**: Build a complete, legally sound contract draft in /memories/{result_key}_generated_contract.md WITHOUT embedded section citations.
 
 **YOU MUST CREATE THIS FILE AND SAVE IT MULTIPLE TIMES.**
@@ -193,6 +194,8 @@ All files are markdown (.md).
   - Verify legal language is precise and enforceable
   - Ensure each party's obligations are clear
   - REMOVE any embedded section citations (e.g., "as per Section 27") unless in the governing law clause
+  - Properly edit before saving the final version. No repeatition of same content is expected. Be concise and clear.
+  - Also the lenght of the contract must be reasonbly long and descriptive and consise at the same time.
 - Save the final polished version to /memories/{result_key}_generated_contract.md.
 
 **COMPLETION CHECK**: The final contract file is complete, with all 6 sections present, internally consistent, and NO inappropriate section citations.
@@ -286,6 +289,7 @@ This Agreement shall be governed by the laws of India. Any disputes shall be res
 - **Read files in 300-line chunks.** This ensures thorough understanding and prevents missing important details.
 - **Only mention law where appropriate.** Governing law, arbitration, compliance - that's it.
 - **If you do not complete all 5 steps, you have failed the task.** There is no shortcut.
+-- use edit_file to append.
 """
 
 
