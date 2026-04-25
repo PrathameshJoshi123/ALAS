@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./workers/contract/agent.py:agent",
+    "chunk_analyzer": "./workers/contract/chunk_analyzer.py:chunk_analyzer"
+  }
+}
