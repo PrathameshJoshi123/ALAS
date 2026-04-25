@@ -8,6 +8,7 @@ from schemas.pdf_upload import PDFUploadSchema
 from services.parser import parse_pdf
 from services.qa_agent import answer_question, initialize_vector_store
 from workers.contract.tasks import trigger_agent_pipeline
+from workers.contract_generation.tasks import trigger_contract_generation_pipeline
 from workers.contract.celery_config import celery_app
 from pydantic import BaseModel
 from services.vectorstore import create_vector_store_from_markdown
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/api/contracts", tags=["contracts"])
 RESULTS_DIR = Path(__file__).parent.parent / "workers" / "contract" / "contracts" / "results"
 CONTRACTS_DIR = Path(__file__).parent.parent / "workers" / "contract" / "contracts"
 MEMORIES_DIR = Path(__file__).parent.parent / "workers" / "contract" / "memories"
+CONTRACT_TEMPLATES_DIR = Path(__file__).parent.parent / "workers" / "contract_generation" / "contract_templates"
 
 # ==============================================================================
 # REQUEST/RESPONSE SCHEMAS
@@ -65,31 +67,35 @@ class QAResponse(BaseModel):
 async def upload_pdf(
     file: UploadFile = File(..., description="PDF file to upload"),
     company_name: str = Form(..., description="Company name"),
+    contract_prompt: str = Form(None, description="Optional prompt for contract generation"),
 ):
     """
     Upload a PDF file and company name.
     
     - Parses the PDF to markdown
     - Saves the markdown file to contracts folder
-    - Triggers background agent pipeline
+    - Triggers background agent pipeline or contract generation pipeline
     """
     try:
         logger.info(f"\n{'='*70}")
         logger.info(f"[API /upload] Received PDF upload request")
         logger.info(f"[API /upload] File: {file.filename}, Company: {company_name}")
+
+        generation_prompt = contract_prompt.strip() if contract_prompt and contract_prompt.strip() else None
+        is_generation_request = generation_prompt is not None
         
         # Validate file type
         if file.content_type != "application/pdf":
             logger.error(f"[API /upload] ✗ Invalid file type: {file.content_type}")
             raise HTTPException(status_code=400, detail="Only PDF files are allowed")
         
-        # Create contracts directory if it doesn't exist
-        contracts_dir = Path(__file__).parent.parent / "workers" / "contract" / "contracts"
-        contracts_dir.mkdir(parents=True, exist_ok=True)
-        logger.debug(f"[API /upload] Contracts directory ready: {contracts_dir}")
+        # Create the output directory for the parsed markdown
+        target_markdown_dir = CONTRACT_TEMPLATES_DIR if is_generation_request else CONTRACTS_DIR
+        target_markdown_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"[API /upload] Markdown output directory ready: {target_markdown_dir}")
         
         # Save uploaded PDF temporarily
-        temp_pdf_path = contracts_dir / f"temp_{file.filename}"
+        temp_pdf_path = target_markdown_dir / f"temp_{file.filename}"
         logger.debug(f"[API /upload] Saving temp PDF to: {temp_pdf_path}")
         
         with open(temp_pdf_path, "wb") as buffer:
@@ -100,22 +106,32 @@ async def upload_pdf(
         
         # Parse PDF to markdown and save automatically
         logger.info(f"[API /upload] Parsing PDF to markdown...")
-        md_filename = parse_pdf(str(temp_pdf_path), company_name=company_name)
+        md_filename = parse_pdf(
+            str(temp_pdf_path),
+            company_name=company_name,
+            output_dir=str(target_markdown_dir),
+        )
         logger.info(f"[API /upload] ✓ Markdown created: {md_filename}")
         
         # Clean up temporary PDF
         temp_pdf_path.unlink()
         logger.debug(f"[API /upload] Cleaned up temp PDF")
         
-        # Trigger background agent pipeline
-        logger.info(f"[API /upload] Triggering agent pipeline...")
-        task = trigger_agent_pipeline.delay(company_name, md_filename)
-        logger.info(f"[API /upload] ✓ Agent pipeline task queued: {task.id}")
-        
-        # Trigger vector store creation asynchronously (don't wait for completion)
-        logger.info(f"[API /upload] Triggering vector store creation...")
-        celery_app.send_task("create_vector_store", args=(md_filename,))
-        logger.info(f"[API /upload] ✓ Vector store creation task queued")
+        if is_generation_request:
+            # Trigger contract generation pipeline
+            logger.info(f"[API /upload] Triggering contract generation pipeline...")
+            task = trigger_contract_generation_pipeline.delay(company_name, md_filename, generation_prompt)
+            logger.info(f"[API /upload] ✓ Contract generation task queued: {task.id}")
+        else:
+            # Trigger background agent pipeline
+            logger.info(f"[API /upload] Triggering agent pipeline...")
+            task = trigger_agent_pipeline.delay(company_name, md_filename)
+            logger.info(f"[API /upload] ✓ Agent pipeline task queued: {task.id}")
+
+            # Trigger vector store creation asynchronously (don't wait for completion)
+            logger.info(f"[API /upload] Triggering vector store creation...")
+            celery_app.send_task("create_vector_store", args=(md_filename,))
+            logger.info(f"[API /upload] ✓ Vector store creation task queued")
         
         logger.info(f"[API /upload] ✓ Upload completed successfully")
         logger.info(f"{'='*70}\n")
@@ -126,6 +142,7 @@ async def upload_pdf(
                 "message": "PDF uploaded and processing started",
                 "company_name": company_name,
                 "markdown_file": md_filename,
+                "mode": "generation" if is_generation_request else "analysis",
                 "task_id": task.id
             }
         )

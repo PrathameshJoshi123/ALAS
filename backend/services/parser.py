@@ -1,9 +1,8 @@
 import pymupdf4llm
-import pathlib
 from pathlib import Path
 
 
-def parse_pdf(pdf_path: str, company_name: str = None) -> str:
+def parse_pdf(pdf_path: str, company_name: str = None, output_dir: str = None) -> str:
     """
     Parse a PDF file and convert it to markdown.
     Automatically saves the markdown to the contracts folder.
@@ -18,8 +17,12 @@ def parse_pdf(pdf_path: str, company_name: str = None) -> str:
     # Parse PDF to markdown
     md_text = pymupdf4llm.to_markdown(pdf_path)
     
-    # Save to contracts folder
-    contracts_dir = Path(__file__).parent.parent / "workers" / "contract" / "contracts"
+    # Save to the requested contract markdown directory
+    contracts_dir = (
+        Path(output_dir)
+        if output_dir
+        else Path(__file__).parent.parent / "workers" / "contract" / "contracts"
+    )
     contracts_dir.mkdir(parents=True, exist_ok=True)
     
     # Generate filename
