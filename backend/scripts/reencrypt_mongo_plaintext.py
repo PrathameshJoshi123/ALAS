@@ -38,7 +38,7 @@ def _record_error(stats: MigrationStats, collection_name: str, doc_id: Any, exc:
 
 
 def validate_encryption_runtime() -> None:
-    """Fail fast with a clear message if RSA key config is invalid."""
+    """Fail fast with a clear message if AES key config is invalid."""
     probe_plaintext = "__migration_probe__"
     encrypted = encrypt_for_storage(probe_plaintext)
     decrypted = decrypt_from_storage(encrypted)
@@ -207,8 +207,7 @@ def main() -> None:
         print("Encryption preflight check failed")
         print(f"Reason: {type(exc).__name__}: {str(exc)}")
         print(
-            "Set DATA_RSA_PUBLIC_KEY_PEM / DATA_RSA_PUBLIC_KEY_PATH and "
-            "DATA_RSA_PRIVATE_KEY_PEM / DATA_RSA_PRIVATE_KEY_PATH before running migration."
+            "Set DATA_AES256_KEY_B64 or DATA_AES256_KEY_PATH before running migration."
         )
         sys.exit(1)
 

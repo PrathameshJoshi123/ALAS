@@ -6,13 +6,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-ENCRYPTION_PREFIX = "enc:v1:"
-ENVELOPE_ALG = "RSA-OAEP-256+AES-256-GCM"
+ENCRYPTION_PREFIX = "enc:"
+ENCRYPTION_PREFIX_V2 = "enc:v2:"
+ENVELOPE_ALG = "AES-256-GCM"
 
 
 def _b64_encode(data: bytes) -> str:
@@ -23,39 +22,37 @@ def _b64_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data.encode("utf-8"))
 
 
-def _get_key_material(env_value_name: str, env_path_name: str) -> bytes | None:
+def _get_key_material(env_value_name: str, env_path_name: str) -> str | None:
     value = os.getenv(env_value_name)
     if value:
-        return value.encode("utf-8")
+        return value.strip()
 
     path_value = os.getenv(env_path_name)
     if path_value:
         key_path = Path(path_value)
         if not key_path.exists():
             raise RuntimeError(f"Configured key file does not exist: {key_path}")
-        return key_path.read_bytes()
+        return key_path.read_text(encoding="utf-8").strip()
 
     return None
 
 
 @lru_cache(maxsize=1)
-def _load_public_key():
-    key_bytes = _get_key_material("DATA_RSA_PUBLIC_KEY_PEM", "DATA_RSA_PUBLIC_KEY_PATH")
-    if not key_bytes:
+def _load_aes256_key() -> bytes:
+    key_b64 = _get_key_material("DATA_AES256_KEY_B64", "DATA_AES256_KEY_PATH")
+    if not key_b64:
         raise RuntimeError(
-            "Data encryption key missing. Set DATA_RSA_PUBLIC_KEY_PEM or DATA_RSA_PUBLIC_KEY_PATH."
+            "Data encryption key missing. Set DATA_AES256_KEY_B64 or DATA_AES256_KEY_PATH."
         )
-    return serialization.load_pem_public_key(key_bytes)
-
-
-@lru_cache(maxsize=1)
-def _load_private_key():
-    key_bytes = _get_key_material("DATA_RSA_PRIVATE_KEY_PEM", "DATA_RSA_PRIVATE_KEY_PATH")
-    if not key_bytes:
+    try:
+        key = _b64_decode(key_b64)
+    except Exception as exc:
+        raise RuntimeError("Invalid DATA_AES256_KEY_B64 format. Must be base64-encoded bytes.") from exc
+    if len(key) != 32:
         raise RuntimeError(
-            "Data decryption key missing. Set DATA_RSA_PRIVATE_KEY_PEM or DATA_RSA_PRIVATE_KEY_PATH."
+            f"Invalid AES key length: expected 32 bytes for AES-256, got {len(key)} bytes."
         )
-    return serialization.load_pem_private_key(key_bytes, password=None)
+    return key
 
 
 def stable_lookup_hash(value: str) -> str:
@@ -67,8 +64,7 @@ def stable_lookup_hash(value: str) -> str:
 
 def encrypt_for_storage(value: Any) -> str:
     """
-    Encrypt any JSON-serializable value using AES-256-GCM and wrap the AES key
-    with RSA-OAEP-SHA256.
+    Encrypt any JSON-serializable value using AES-256-GCM.
     """
     if value is None:
         return value
@@ -77,31 +73,21 @@ def encrypt_for_storage(value: Any) -> str:
 
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
-    aes_key = AESGCM.generate_key(bit_length=256)
+    aes_key = _load_aes256_key()
     nonce = os.urandom(12)
     aesgcm = AESGCM(aes_key)
     ciphertext = aesgcm.encrypt(nonce, payload, None)
 
-    wrapped_key = _load_public_key().encrypt(
-        aes_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None,
-        ),
-    )
-
     envelope = {
-        "v": 1,
+        "v": 2,
         "alg": ENVELOPE_ALG,
-        "ek": _b64_encode(wrapped_key),
         "iv": _b64_encode(nonce),
         "ct": _b64_encode(ciphertext),
     }
     encoded_envelope = _b64_encode(
         json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )
-    return f"{ENCRYPTION_PREFIX}{encoded_envelope}"
+    return f"{ENCRYPTION_PREFIX_V2}{encoded_envelope}"
 
 
 def decrypt_from_storage(value: Any) -> Any:
@@ -109,21 +95,16 @@ def decrypt_from_storage(value: Any) -> Any:
     if value is None or not isinstance(value, str) or not value.startswith(ENCRYPTION_PREFIX):
         return value
 
-    encoded = value[len(ENCRYPTION_PREFIX) :]
+    if not value.startswith(ENCRYPTION_PREFIX_V2):
+        raise RuntimeError("Unsupported encrypted payload version. Re-encrypt data using AES-256.")
+
+    encoded = value[len(ENCRYPTION_PREFIX_V2) :]
     envelope = json.loads(_b64_decode(encoded).decode("utf-8"))
 
-    encrypted_key = _b64_decode(envelope["ek"])
     nonce = _b64_decode(envelope["iv"])
     ciphertext = _b64_decode(envelope["ct"])
 
-    aes_key = _load_private_key().decrypt(
-        encrypted_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None,
-        ),
-    )
+    aes_key = _load_aes256_key()
     decrypted = AESGCM(aes_key).decrypt(nonce, ciphertext, None)
     return json.loads(decrypted.decode("utf-8"))
 
