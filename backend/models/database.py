@@ -35,16 +35,34 @@ def init_db_indexes() -> None:
     """Create collections/indexes needed by auth + contract flows."""
     db = get_db()
 
-    db.tenants.create_index([("company_name", ASCENDING)])
+    db.tenants.create_index([("created_at", DESCENDING)])
 
     db.users.create_index(
         [("tenant_id", ASCENDING), ("email", ASCENDING)],
         unique=True,
-        name="uniq_user_per_tenant",
+        name="uniq_user_per_tenant_legacy",
+        partialFilterExpression={"email": {"$exists": True}},
+    )
+    db.users.create_index(
+        [("tenant_id", ASCENDING), ("email_hash", ASCENDING)],
+        unique=True,
+        name="uniq_user_per_tenant_hash",
+        partialFilterExpression={"email_hash": {"$exists": True}},
     )
     db.users.create_index([("tenant_id", ASCENDING)])
 
-    db.refresh_tokens.create_index([("token", ASCENDING)], unique=True)
+    db.refresh_tokens.create_index(
+        [("token", ASCENDING)],
+        unique=True,
+        name="uniq_refresh_token_legacy",
+        partialFilterExpression={"token": {"$exists": True}},
+    )
+    db.refresh_tokens.create_index(
+        [("token_hash", ASCENDING)],
+        unique=True,
+        name="uniq_refresh_token_hash",
+        partialFilterExpression={"token_hash": {"$exists": True}},
+    )
     db.refresh_tokens.create_index([("user_id", ASCENDING)])
     db.refresh_tokens.create_index([("expires_at", ASCENDING)])
 

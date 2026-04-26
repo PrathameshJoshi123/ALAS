@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from models.database import get_db, now_utc
+from services.data_encryption import decrypt_fields, decrypt_from_storage, encrypt_for_storage
 from services.parser import parse_pdf
 from services.qa_agent import answer_question, initialize_vector_store
 from shared.dependencies import get_current_user
@@ -31,6 +32,19 @@ MEMORIES_DIR = Path(__file__).parent.parent / "workers" / "contract" / "memories
 GENERATION_MEMORIES_DIR = Path(__file__).parent.parent / "workers" / "contract_generation" / "memories"
 VECTORSTORES_DIR = Path(__file__).parent.parent / "workers" / "contract" / "vectorstores"
 CONTRACT_TEMPLATES_DIR = Path(__file__).parent.parent / "workers" / "contract_generation" / "contract_templates"
+
+CONTRACT_ENCRYPTED_FIELDS = (
+    "company_name",
+    "counterparty_name",
+    "contract_type",
+    "original_filename",
+    "analysis_payload",
+    "analysis_markdown",
+)
+
+
+def _decrypt_contract_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    return decrypt_fields(doc, CONTRACT_ENCRYPTED_FIELDS)
 
 
 class QARequest(BaseModel):
@@ -58,23 +72,24 @@ def _serialize_datetime(value: Any) -> str | None:
 
 
 def _serialize_contract(doc: dict[str, Any]) -> dict[str, Any]:
+    decrypted = _decrypt_contract_doc(doc)
     return {
-        "id": str(doc["_id"]),
-        "tenant_id": doc.get("tenant_id"),
-        "owner_user_id": doc.get("owner_user_id"),
-        "company_name": doc.get("company_name"),
-        "counterparty_name": doc.get("counterparty_name"),
-        "contract_type": doc.get("contract_type"),
-        "original_filename": doc.get("original_filename"),
-        "markdown_file": doc.get("markdown_file"),
-        "vector_store_key": doc.get("vector_store_key"),
-        "status": doc.get("status"),
-        "analysis_mode": doc.get("analysis_mode"),
-        "analysis_task_id": doc.get("analysis_task_id"),
-        "created_at": _serialize_datetime(doc.get("created_at")),
-        "updated_at": _serialize_datetime(doc.get("updated_at")),
-        "last_activity_at": _serialize_datetime(doc.get("last_activity_at")),
-        "live": doc.get("live", {}),
+        "id": str(decrypted["_id"]),
+        "tenant_id": decrypted.get("tenant_id"),
+        "owner_user_id": decrypted.get("owner_user_id"),
+        "company_name": decrypted.get("company_name"),
+        "counterparty_name": decrypted.get("counterparty_name"),
+        "contract_type": decrypted.get("contract_type"),
+        "original_filename": decrypted.get("original_filename"),
+        "markdown_file": decrypted.get("markdown_file"),
+        "vector_store_key": decrypted.get("vector_store_key"),
+        "status": decrypted.get("status"),
+        "analysis_mode": decrypted.get("analysis_mode"),
+        "analysis_task_id": decrypted.get("analysis_task_id"),
+        "created_at": _serialize_datetime(decrypted.get("created_at")),
+        "updated_at": _serialize_datetime(decrypted.get("updated_at")),
+        "last_activity_at": _serialize_datetime(decrypted.get("last_activity_at")),
+        "live": decrypted.get("live", {}),
     }
 
 
@@ -217,15 +232,16 @@ def _build_analysis_payload_from_markdown(markdown_content: str) -> dict[str, An
 
 def _sync_analysis_from_memories(contract: dict[str, Any]) -> dict[str, Any] | None:
     """If final analysis markdown exists, persist it in Mongo and return payload."""
+    contract = _decrypt_contract_doc(contract)
     company_name = contract.get("company_name")
     if not company_name:
-        return contract.get("analysis_payload")
+        return decrypt_from_storage(contract.get("analysis_payload"))
 
     if contract.get("analysis_mode") == "generation":
         gen_filename = f"{company_name.lower().replace(' ', '_')}_generated_contract.md"
         gen_path = GENERATION_MEMORIES_DIR / gen_filename
         if not gen_path.exists():
-            return contract.get("analysis_payload")
+            return decrypt_from_storage(contract.get("analysis_payload"))
         
         markdown_content = gen_path.read_text(encoding="utf-8")
         parsed_payload = {
@@ -245,7 +261,7 @@ def _sync_analysis_from_memories(contract: dict[str, Any]) -> dict[str, Any] | N
         final_filename = _final_analysis_filename_for_company(company_name)
         final_path = MEMORIES_DIR / final_filename
         if not final_path.exists():
-            return contract.get("analysis_payload")
+            return decrypt_from_storage(contract.get("analysis_payload"))
 
         markdown_content = final_path.read_text(encoding="utf-8")
         parsed_payload = _build_analysis_payload_from_markdown(markdown_content)
@@ -255,8 +271,8 @@ def _sync_analysis_from_memories(contract: dict[str, Any]) -> dict[str, Any] | N
         {"_id": contract["_id"]},
         {
             "$set": {
-                "analysis_payload": parsed_payload,
-                "analysis_markdown": markdown_content,
+                "analysis_markdown": encrypt_for_storage(markdown_content),
+                "analysis_payload": encrypt_for_storage(parsed_payload),
                 "analysis_source_filename": final_filename,
                 "analysis_updated_at": now_utc(),
                 "status": "completed",
@@ -384,10 +400,10 @@ async def upload_pdf(
         contract_doc = {
             "tenant_id": current_user["tenant_id"],
             "owner_user_id": current_user["id"],
-            "company_name": display_company_name,
-            "counterparty_name": (counterparty_name or "").strip() or display_company_name,
-            "contract_type": (contract_type or "general").strip(),
-            "original_filename": file.filename,
+            "company_name": encrypt_for_storage(display_company_name),
+            "counterparty_name": encrypt_for_storage((counterparty_name or "").strip() or display_company_name),
+            "contract_type": encrypt_for_storage((contract_type or "general").strip()),
+            "original_filename": encrypt_for_storage(file.filename),
             "markdown_file": md_filename,
             "vector_store_key": Path(md_filename).stem,
             "analysis_mode": mode,
@@ -448,7 +464,7 @@ def list_contracts(
         .skip(skip)
         .limit(page_size)
     )
-    items = [_serialize_contract(_attach_live_status(c)) for c in cursor]
+    items = [_serialize_contract(_attach_live_status(_decrypt_contract_doc(c))) for c in cursor]
     total = db.contracts.count_documents({"owner_user_id": current_user["id"]})
 
     return {
@@ -471,7 +487,7 @@ def get_contract_details(contract_id: str, current_user: dict[str, Any] = Depend
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
 
-    contract = _attach_live_status(contract)
+    contract = _attach_live_status(_decrypt_contract_doc(contract))
     db.contracts.update_one(
         {"_id": contract["_id"]},
         {
@@ -512,6 +528,8 @@ def analyze_contract(contract_id: str, current_user: dict[str, Any] = Depends(ge
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
 
+    contract = _decrypt_contract_doc(contract)
+
     task = trigger_agent_pipeline.delay(contract["company_name"], contract["markdown_file"])
     celery_app.send_task("create_vector_store", args=(contract["markdown_file"],))
 
@@ -546,10 +564,11 @@ def get_contract_analysis(contract_id: str, current_user: dict[str, Any] = Depen
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
 
+    contract = _decrypt_contract_doc(contract)
     payload = _sync_analysis_from_memories(contract)
 
     refreshed = db.contracts.find_one({"_id": contract["_id"]})
-    refreshed = _attach_live_status(refreshed)
+    refreshed = _attach_live_status(_decrypt_contract_doc(refreshed))
     db.contracts.update_one(
         {"_id": refreshed["_id"]},
         {"$set": {"status": refreshed["status"], "updated_at": now_utc()}},
@@ -632,7 +651,7 @@ async def get_markdown_content(filename: str, current_user: dict[str, Any] = Dep
         user_contracts = db.contracts.find({"owner_user_id": current_user["id"]}, {"company_name": 1})
         allowed = set()
         for c in user_contracts:
-            cname = c.get("company_name")
+            cname = decrypt_from_storage(c.get("company_name"))
             if cname:
                 allowed.add(_final_analysis_filename_for_company(cname))
                 allowed.add(f"{cname.lower().replace(' ', '_')}_generated_contract.md")
@@ -675,7 +694,7 @@ async def list_markdown_files(current_user: dict[str, Any] = Depends(get_current
 
     # Include final analysis and generated contract files when available in /memories.
     for c in contracts:
-        company_name = c.get("company_name")
+        company_name = decrypt_from_storage(c.get("company_name"))
         if not company_name:
             continue
         final_name = _final_analysis_filename_for_company(company_name)
@@ -711,6 +730,7 @@ async def ask_question(
             contract_id=request.contract_id,
             markdown_file=request.markdown_file,
         )
+        contract = _decrypt_contract_doc(contract)
         contract_id = str(contract["_id"])
 
         initialize_vector_store(contract["markdown_file"])
@@ -726,8 +746,8 @@ async def ask_question(
                 "tenant_id": current_user["tenant_id"],
                 "user_id": current_user["id"],
                 "contract_id": contract_id,
-                "question": request.question,
-                "answer": result.get("answer"),
+                "question": encrypt_for_storage(request.question),
+                "answer": encrypt_for_storage(result.get("answer")),
                 "qa_id": result.get("qa_id"),
                 "source_file": contract["markdown_file"],
                 "created_at": now,

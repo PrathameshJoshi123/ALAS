@@ -2,6 +2,7 @@ from typing import Any
 from bson import ObjectId
 from fastapi import Header, HTTPException
 from models.database import get_db
+from services.data_encryption import decrypt_from_storage
 from services.security import decode_token
 
 
@@ -38,6 +39,9 @@ def get_current_user(authorization: str | None = Header(default=None)) -> dict[s
     user = db.users.find_one({"_id": user_oid, "is_active": True})
     if not user:
         raise HTTPException(status_code=401, detail="User not found or inactive")
+
+    user["email"] = decrypt_from_storage(user.get("email"))
+    user["name"] = decrypt_from_storage(user.get("name"))
 
     user["id"] = str(user["_id"])
     user.pop("_id", None)

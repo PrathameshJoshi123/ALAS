@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
 from models.database import get_db, now_utc
+from services.data_encryption import decrypt_from_storage, encrypt_for_storage, stable_lookup_hash
 from services.security import (
     create_access_token,
     create_refresh_token,
@@ -39,21 +40,26 @@ class RefreshRequest(BaseModel):
 
 
 def _serialize_tenant(doc: dict) -> dict:
+    company_name = decrypt_from_storage(doc.get("company_name", doc.get("company_name_enc")))
+    industry = decrypt_from_storage(doc.get("industry", doc.get("industry_enc")))
+    subscription_tier = decrypt_from_storage(doc.get("subscription_tier", doc.get("subscription_tier_enc")))
     return {
         "id": str(doc["_id"]),
-        "company_name": doc.get("company_name"),
-        "industry": doc.get("industry"),
-        "subscription_tier": doc.get("subscription_tier"),
+        "company_name": company_name,
+        "industry": industry,
+        "subscription_tier": subscription_tier,
         "created_at": doc.get("created_at"),
     }
 
 
 def _serialize_user(doc: dict) -> dict:
+    email = decrypt_from_storage(doc.get("email", doc.get("email_enc")))
+    name = decrypt_from_storage(doc.get("name", doc.get("name_enc")))
     return {
         "id": str(doc["_id"]),
         "tenant_id": doc.get("tenant_id"),
-        "email": doc.get("email"),
-        "name": doc.get("name"),
+        "email": email,
+        "name": name,
         "role_id": doc.get("role_id", "member"),
         "is_active": doc.get("is_active", True),
         "email_verified": doc.get("email_verified", True),
@@ -66,9 +72,9 @@ def create_tenant(payload: CreateTenantRequest):
     now = now_utc()
 
     tenant_doc = {
-        "company_name": payload.company_name.strip(),
-        "industry": payload.industry.strip(),
-        "subscription_tier": payload.subscription_tier.strip(),
+        "company_name": encrypt_for_storage(payload.company_name.strip()),
+        "industry": encrypt_for_storage(payload.industry.strip()),
+        "subscription_tier": encrypt_for_storage(payload.subscription_tier.strip()),
         "created_at": now,
         "updated_at": now,
     }
@@ -88,6 +94,8 @@ def list_tenants():
 @router.post("/signup")
 def signup(payload: SignupRequest):
     db = get_db()
+    normalized_email = payload.email.lower().strip()
+    email_hash = stable_lookup_hash(normalized_email)
 
     try:
         tenant_oid = ObjectId(payload.tenant_id)
@@ -101,18 +109,26 @@ def signup(payload: SignupRequest):
     existing = db.users.find_one(
         {
             "tenant_id": payload.tenant_id,
-            "email": payload.email.lower().strip(),
+            "email_hash": email_hash,
         }
     )
+    if not existing:
+        existing = db.users.find_one(
+            {
+                "tenant_id": payload.tenant_id,
+                "email": normalized_email,
+            }
+        )
     if existing:
         raise HTTPException(status_code=409, detail="User already exists for this tenant")
 
     now = now_utc()
     user_doc = {
         "tenant_id": payload.tenant_id,
-        "email": payload.email.lower().strip(),
+        "email": encrypt_for_storage(normalized_email),
+        "email_hash": email_hash,
         "password_hash": hash_password(payload.password),
-        "name": payload.name.strip(),
+        "name": encrypt_for_storage(payload.name.strip()),
         "role_id": "member",
         "is_active": True,
         "email_verified": True,
@@ -128,24 +144,36 @@ def signup(payload: SignupRequest):
 @router.post("/login")
 def login(payload: LoginRequest):
     db = get_db()
+    normalized_email = payload.email.lower().strip()
+    email_hash = stable_lookup_hash(normalized_email)
 
     user = db.users.find_one(
         {
             "tenant_id": payload.tenant_id,
-            "email": payload.email.lower().strip(),
+            "email_hash": email_hash,
             "is_active": True,
         }
     )
+    if not user:
+        user = db.users.find_one(
+            {
+                "tenant_id": payload.tenant_id,
+                "email": normalized_email,
+                "is_active": True,
+            }
+        )
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     user_id = str(user["_id"])
-    access_token = create_access_token(user_id, payload.tenant_id, user["email"])
-    refresh_token, refresh_expires_at = create_refresh_token(user_id, payload.tenant_id, user["email"])
+    user_email = decrypt_from_storage(user.get("email", user.get("email_enc")))
+    access_token = create_access_token(user_id, payload.tenant_id, user_email)
+    refresh_token, refresh_expires_at = create_refresh_token(user_id, payload.tenant_id, user_email)
 
     db.refresh_tokens.insert_one(
         {
-            "token": refresh_token,
+            "token": encrypt_for_storage(refresh_token),
+            "token_hash": stable_lookup_hash(refresh_token),
             "user_id": user_id,
             "tenant_id": payload.tenant_id,
             "expires_at": refresh_expires_at,
@@ -176,7 +204,10 @@ def login(payload: LoginRequest):
 def refresh(payload: RefreshRequest):
     db = get_db()
 
-    token_doc = db.refresh_tokens.find_one({"token": payload.refresh_token, "revoked": False})
+    token_hash = stable_lookup_hash(payload.refresh_token)
+    token_doc = db.refresh_tokens.find_one({"token_hash": token_hash, "revoked": False})
+    if not token_doc:
+        token_doc = db.refresh_tokens.find_one({"token": payload.refresh_token, "revoked": False})
     if not token_doc:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
