@@ -10,3 +10,4 @@ openapi.json
 vectorstores/
 *.log
 archive/
+keys/

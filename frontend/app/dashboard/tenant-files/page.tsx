@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Undo2,
   Redo2,
@@ -27,35 +27,42 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import React from "react";
 
-const DocumentEditor = React.memo(({ contract, htmlContent, onInput }: any) => {
-  return (
-    <div
-      id="contract-document-content"
-      contentEditable
-      suppressContentEditableWarning
-      onInput={onInput}
-      className="outline-none focus:bg-slate-50/50 p-4 -mx-4 rounded-2xl transition-colors"
-    >
-      <h1 className="text-[32px] font-bold text-[#0B1437] mb-6 tracking-tight">
-        {(
-          contract?.original_filename ||
-          contract?.markdown_file ||
-          "MASTER_SERVICE_AGREEMENT"
-        )
-          ?.split(".")[0]
-          ?.replaceAll("_", " ")}
-      </h1>
+const DocumentEditor = React.memo(
+  function DocumentEditor({ contract, htmlContent, onInput }: any) {
+    return (
+      <div
+        id="contract-document-content"
+        contentEditable
+        suppressContentEditableWarning
+        onInput={onInput}
+        className="outline-none focus:bg-slate-50/50 p-4 -mx-4 rounded-2xl transition-colors"
+      >
+        <h1 className="text-[32px] font-bold text-[#0B1437] mb-6 tracking-tight">
+          {(
+            contract?.original_filename ||
+            contract?.markdown_file ||
+            "MASTER_SERVICE_AGREEMENT"
+          )
+            ?.split(".")[0]
+            ?.replaceAll("_", " ")}
+        </h1>
 
-      <div className="contract-markdown markdown-body max-w-none">
-        <div dangerouslySetInnerHTML={{ __html: htmlContent }} />
+        <div className="contract-markdown markdown-body max-w-none">
+          <div dangerouslySetInnerHTML={{ __html: htmlContent }} />
+        </div>
       </div>
-    </div>
-  );
-}, (prev, next) => {
-  return prev.htmlContent === next.htmlContent && 
-         prev.contract?.original_filename === next.contract?.original_filename &&
-         prev.contract?.markdown_file === next.contract?.markdown_file;
-});
+    );
+  },
+  (prev, next) => {
+    return (
+      prev.htmlContent === next.htmlContent &&
+      prev.contract?.original_filename === next.contract?.original_filename &&
+      prev.contract?.markdown_file === next.contract?.markdown_file
+    );
+  },
+);
+
+DocumentEditor.displayName = "DocumentEditor";
 
 export default function TenantFilesPage() {
   const searchParams = useSearchParams();
@@ -76,36 +83,49 @@ export default function TenantFilesPage() {
   const [qaInput, setQaInput] = useState("");
   const [qaLoading, setQaLoading] = useState(false);
   const [qaHistory, setQaHistory] = useState<
-    Array<{ question: string; answer: string }>
+    Array<{
+      id: string;
+      question: string;
+      answer: string;
+      answerHtml: string;
+      isPending: boolean;
+      isError: boolean;
+    }>
   >([]);
   const [pollingActive, setPollingActive] = useState(false);
   const [expandedClauses, setExpandedClauses] = useState<Set<number>>(
     new Set(),
   );
+  const qaThreadRef = useRef<HTMLDivElement | null>(null);
+  const qaInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const renderMarkdownToHtml = useCallback(async (content: string) => {
+    try {
+      marked.setOptions({
+        gfm: true,
+        breaks: true,
+      });
+
+      const rendered = marked.parse(content);
+      const renderedHtml =
+        typeof rendered === "string" ? rendered : await rendered;
+      return DOMPurify.sanitize(renderedHtml);
+    } catch (err) {
+      const escaped = DOMPurify.sanitize(content, { ALLOWED_TAGS: [] });
+      return `<p>${escaped}</p>`;
+    }
+  }, []);
 
   useEffect(() => {
     async function parseMarkdown() {
       const content =
         analysis?.analysis_markdown ||
         "Analysis markdown will appear here once processing is complete.";
-      try {
-        marked.setOptions({
-          gfm: true,
-          breaks: true,
-        });
-
-        const rendered = marked.parse(content);
-        const renderedHtml =
-          typeof rendered === "string" ? rendered : await rendered;
-        const sanitized = DOMPurify.sanitize(renderedHtml);
-        setHtmlContent(sanitized);
-      } catch (err) {
-        const escaped = DOMPurify.sanitize(content, { ALLOWED_TAGS: [] });
-        setHtmlContent(`<p>${escaped}</p>`);
-      }
+      const sanitized = await renderMarkdownToHtml(content);
+      setHtmlContent(sanitized);
     }
     parseMarkdown();
-  }, [analysis?.analysis_markdown]);
+  }, [analysis?.analysis_markdown, renderMarkdownToHtml]);
 
   const fetchContractData = useCallback(
     async (isPolling = false) => {
@@ -180,7 +200,7 @@ export default function TenantFilesPage() {
   }, [isGenerating]);
 
   const handleContentChange = useCallback(() => {
-    setHasUnsavedChanges(prev => {
+    setHasUnsavedChanges((prev) => {
       if (!prev) return true;
       return prev;
     });
@@ -250,7 +270,23 @@ export default function TenantFilesPage() {
     if (!contractId || !qaInput.trim() || qaLoading) return;
 
     const question = qaInput.trim();
+    const pendingId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    // Move the prompt into the thread immediately and clear composer text.
     setQaInput("");
+
+    setQaHistory((prev) => [
+      ...prev,
+      {
+        id: pendingId,
+        question,
+        answer: "",
+        answerHtml: "",
+        isPending: true,
+        isError: false,
+      },
+    ]);
+
     setQaLoading(true);
 
     try {
@@ -258,25 +294,64 @@ export default function TenantFilesPage() {
         contractId,
         question,
       );
-      setQaHistory((prev) => [
-        ...prev,
-        {
-          question,
-          answer: response?.answer || response?.error || "No answer returned.",
-        },
-      ]);
+      const answerText =
+        response?.answer || response?.error || "No answer returned.";
+      const answerHtml = await renderMarkdownToHtml(answerText);
+
+      setQaHistory((prev) =>
+        prev.map((item) =>
+          item.id === pendingId
+            ? {
+                ...item,
+                answer: answerText,
+                answerHtml,
+                isPending: false,
+                isError: false,
+              }
+            : item,
+        ),
+      );
     } catch (error: any) {
       toast.error(error?.response?.data?.detail || "Failed to get AI answer.");
-      setQaHistory((prev) => [
-        ...prev,
-        {
-          question,
-          answer: "Request failed. Please try again.",
-        },
-      ]);
+      const errorText = "Request failed. Please try again.";
+      const errorHtml = await renderMarkdownToHtml(errorText);
+
+      setQaHistory((prev) =>
+        prev.map((item) =>
+          item.id === pendingId
+            ? {
+                ...item,
+                answer: errorText,
+                answerHtml: errorHtml,
+                isPending: false,
+                isError: true,
+              }
+            : item,
+        ),
+      );
     } finally {
       setQaLoading(false);
     }
+  };
+
+  useEffect(() => {
+    if (!isChatOpen || !qaThreadRef.current) return;
+
+    qaThreadRef.current.scrollTo({
+      top: qaThreadRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [qaHistory, qaLoading, isChatOpen]);
+
+  const quickPrompts = [
+    "Rewrite indemnity to be vendor-friendly and capped.",
+    "Summarize top 3 negotiation priorities in plain language.",
+    "Flag hidden termination and auto-renewal risks.",
+  ];
+
+  const handleApplyQuickPrompt = (prompt: string) => {
+    setQaInput(prompt);
+    qaInputRef.current?.focus();
   };
 
   const handleExportPdf = async () => {
@@ -285,7 +360,7 @@ export default function TenantFilesPage() {
     try {
       const toastId = toast.loading("Preparing PDF for download...");
       const html2pdf = (await import("html2pdf.js")).default;
-      
+
       const element = document.getElementById("contract-document-content");
       if (!element) {
         toast.dismiss(toastId);
@@ -293,14 +368,21 @@ export default function TenantFilesPage() {
       }
 
       const opt = {
-        margin:       0.7,
-        filename:     `${contract?.company_name?.replace(/\s+/g, '_') || 'contract'}_document.pdf`,
-        image:        { type: 'jpeg', quality: 0.98 },
-        html2canvas:  { scale: 2 },
-        jsPDF:        { unit: 'in', format: 'letter', orientation: 'portrait' }
+        margin: 0.7,
+        filename: `${contract?.company_name?.replace(/\s+/g, "_") || "contract"}_document.pdf`,
+        image: { type: "jpeg" as const, quality: 0.98 },
+        html2canvas: { scale: 2 },
+        jsPDF: {
+          unit: "in" as const,
+          format: "letter" as const,
+          orientation: "portrait" as const,
+        },
       };
 
-      await html2pdf().set(opt).from(element).save();
+      await html2pdf()
+        .set(opt as any)
+        .from(element)
+        .save();
       toast.success("PDF Downloaded successfully!", { id: toastId });
     } catch (e) {
       console.error("PDF Export error:", e);
@@ -362,6 +444,7 @@ export default function TenantFilesPage() {
   // Pre-load a mock template if we just finished generating and have no real contractId
   const showMockGenerated =
     !contractId && !fetching && searchParams.get("generated") === "true";
+  const isTemplateGenerationView = searchParams.get("generated") === "true";
 
   const toggleClause = (idx: number) => {
     const newSet = new Set(expandedClauses);
@@ -469,10 +552,10 @@ export default function TenantFilesPage() {
             </div>
           ) : (
             <div className="max-w-[750px] mx-auto space-y-12">
-              <DocumentEditor 
-                contract={contract} 
-                htmlContent={htmlContent} 
-                onInput={handleContentChange} 
+              <DocumentEditor
+                contract={contract}
+                htmlContent={htmlContent}
+                onInput={handleContentChange}
               />
               <div className="h-40"></div>
             </div>
@@ -506,8 +589,8 @@ export default function TenantFilesPage() {
 
       {isChatOpen ? (
         /* AI Assistant Right Panel */
-        <div className="flex-1 min-w-[380px] max-w-[450px] bg-[#F4F7FB] overflow-y-auto h-full px-8 py-10 space-y-10 custom-scrollbar shadow-[-10px_0_30px_rgba(0,0,0,0.02)] relative animate-in slide-in-from-right duration-300">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
+        <div className="flex-1 min-w-[380px] max-w-[450px] h-full bg-gradient-to-b from-[#F4F7FB] to-[#EEF3FB] shadow-[-10px_0_30px_rgba(0,0,0,0.02)] relative animate-in slide-in-from-right duration-300 border-l border-slate-200/60 flex flex-col">
+          <div className="px-6 pt-6 pb-4 border-b border-slate-200/70 bg-white/70 backdrop-blur-xl shrink-0">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-xl bg-[#0B1437] flex items-center justify-center shrink-0 shadow-[0_8px_20px_rgba(11,20,55,0.2)]">
                 <Bot
@@ -519,160 +602,130 @@ export default function TenantFilesPage() {
                 <h3 className="font-extrabold text-[18px] text-slate-900 tracking-tight leading-none mb-1">
                   AI Assistant
                 </h3>
-                <span className="text-[10px] font-bold tracking-[0.15em] text-[#3B5FE5] uppercase">
+                <span className="text-[10px] font-bold tracking-[0.15em] text-[#3B5FE5] uppercase inline-flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                   Analysis Active
                 </span>
               </div>
+              <div className="ml-auto flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-full bg-white border border-slate-200 text-[10px] font-semibold text-slate-500">
+                  {qaHistory.length} turns
+                </span>
+                <button
+                  onClick={() => setIsChatOpen(false)}
+                  className="w-10 h-10 rounded-full bg-slate-200/50 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-            <button
-              onClick={() => setIsChatOpen(false)}
-              className="w-10 h-10 rounded-full bg-slate-200/50 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
 
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-slate-400"></div>
-              <h4 className="text-[11px] font-bold tracking-[0.15em] uppercase text-slate-500">
-                Strategic Rationale
-              </h4>
+          <div className="px-6 pt-4 pb-5 flex-1 min-h-0 flex flex-col gap-3">
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[11px] font-bold tracking-[0.14em] uppercase text-slate-500">
+                Chat
+              </span>
+              <button
+                type="button"
+                onClick={() => setQaInput("")}
+                className="text-[10px] font-semibold text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                Clear Input
+              </button>
             </div>
 
-            <div className="bg-white rounded-[20px] p-7 shadow-sm border border-slate-100">
-              <p className="text-[13px] text-slate-700 leading-relaxed font-medium mb-6">
-                {analysis?.analysis_summary ||
-                  "Performing strategic evaluation of document structure..."}
-              </p>
-
-              <div className="space-y-3">
-                {analysis?.recommended_actions
-                  ?.slice(0, 3)
-                  .map((rec: string, i: number) => (
-                    <div
-                      key={i}
-                      className="bg-blue-50/80 rounded-xl p-4 border border-blue-100/50"
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <Info
-                          className="w-4 h-4 text-[#3B5FE5]"
-                          strokeWidth={2.5}
-                        />
-                        <span className="text-[10px] font-bold tracking-widest text-[#3B5FE5] uppercase">
-                          Recommendation {i + 1}
-                        </span>
-                      </div>
-                      <p className="text-[11.5px] text-blue-900/70 leading-relaxed font-medium ml-6">
-                        {rec}
-                      </p>
-                    </div>
-                  ))}
-              </div>
-
-              {/* Detailed Tiered Suggestions */}
-              {analysis?.detailed_suggestions && (
-                <div className="mt-8 pt-8 border-t border-slate-100 space-y-6">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-[11px] font-bold tracking-[0.12em] uppercase text-slate-400">
-                      Strategic Enhancements
-                    </h4>
-                    <span className="text-[10px] font-bold text-blue-600">
-                      {analysis.detailed_suggestions.improvement_potential}%
-                      Potential
-                    </span>
+            <div
+              ref={qaThreadRef}
+              className={`flex-1 min-h-0 custom-scrollbar px-1 ${qaHistory.length > 0 ? "overflow-y-auto space-y-6" : "overflow-hidden"}`}
+            >
+              {qaHistory.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center px-5">
+                  <div className="w-12 h-12 rounded-2xl bg-white shadow-sm border border-slate-200 flex items-center justify-center mb-4">
+                    <Bot className="w-6 h-6 text-[#3B5FE5]" />
                   </div>
-
-                  {[
-                    {
-                      tier: "tier_1_critical",
-                      label: "Tier 1 / Critical",
-                      color: "red",
-                    },
-                    {
-                      tier: "tier_2_important",
-                      label: "Tier 2 / Important",
-                      color: "orange",
-                    },
-                    {
-                      tier: "tier_3_recommended",
-                      label: "Tier 3 / Recommended",
-                      color: "blue",
-                    },
-                  ].map((t) => {
-                    const items =
-                      analysis.detailed_suggestions[
-                        t.tier as keyof typeof analysis.detailed_suggestions
-                      ];
-                    if (!Array.isArray(items) || items.length === 0)
-                      return null;
-
-                    return (
-                      <div key={t.tier} className="space-y-3">
-                        <span
-                          className={`text-[9px] font-black uppercase tracking-widest ${
-                            t.color === "red"
-                              ? "text-red-500"
-                              : t.color === "orange"
-                                ? "text-orange-500"
-                                : "text-blue-500"
-                          }`}
-                        >
-                          {t.label}
-                        </span>
-                        {items.map((item: any, i: number) => (
-                          <div
-                            key={i}
-                            className="bg-white rounded-xl p-4 border border-slate-100 shadow-sm hover:border-blue-200 transition-colors"
-                          >
-                            <h5 className="text-[12px] font-bold text-slate-900 mb-1">
-                              {item.title}
-                            </h5>
-                            <p className="text-[11px] text-slate-500 leading-normal">
-                              {item.purpose}
-                            </p>
-                          </div>
-                        ))}
+                  <h4 className="text-[15px] font-bold text-slate-800 mb-1.5">
+                    How can I help you?
+                  </h4>
+                  <p className="text-[12px] text-slate-500 mb-8 max-w-[260px] leading-relaxed">
+                    Ask questions about clauses, request rewrites, or clarify legal terminology.
+                  </p>
+                  <div className="flex flex-col gap-2 w-full max-w-[320px]">
+                    {quickPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => handleApplyQuickPrompt(prompt)}
+                        className="w-full px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-[#3B5FE5]/30 hover:bg-blue-50/50 text-[11px] font-medium text-slate-600 transition-all text-left shadow-sm flex items-center justify-between group"
+                      >
+                        <span className="truncate pr-2">{prompt}</span>
+                        <div className="w-5 h-5 rounded-md bg-slate-100 flex items-center justify-center group-hover:bg-[#3B5FE5] group-hover:text-white transition-colors shrink-0">
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-5 pb-2">
+                  {qaHistory.map((item) => (
+                    <React.Fragment key={item.id}>
+                      <div className="flex justify-end pl-10">
+                        <div className="bg-[#0B1437] text-white rounded-2xl rounded-tr-sm px-4 py-3 shadow-sm border border-[#1C2B62]">
+                          <p className="text-[13px] leading-relaxed whitespace-pre-wrap">
+                            {item.question}
+                          </p>
+                        </div>
                       </div>
-                    );
-                  })}
+
+                      <div className="flex justify-start pr-4">
+                        <div className="flex gap-3 w-full">
+                          <div className="w-7 h-7 rounded-full bg-white border border-slate-200 flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                            <Bot className="w-4 h-4 text-[#3B5FE5]" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            {item.isPending ? (
+                              <div className="flex items-center gap-2 text-[13px] text-slate-500 h-8">
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span>Drafting answer...</span>
+                              </div>
+                            ) : (
+                              <div
+                                className={`contract-markdown markdown-body max-w-none text-[13px] leading-relaxed bg-white rounded-2xl rounded-tl-sm px-4 py-3.5 border border-slate-200 shadow-sm ${item.isError ? "text-red-600" : "text-slate-700"}`}
+                                dangerouslySetInnerHTML={{
+                                  __html: item.answerHtml,
+                                }}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </React.Fragment>
+                  ))}
                 </div>
               )}
             </div>
-          </div>
 
-          <div className="space-y-4">
-            <h4 className="text-[11px] font-bold tracking-[0.15em] uppercase text-slate-500 mb-2">
-              Enhance Document
-            </h4>
+            <div className="shrink-0 flex flex-col gap-3 mt-2">
+              {qaHistory.length > 0 && (
+                <div className="flex flex-wrap gap-2 px-1">
+                  {quickPrompts.map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      onClick={() => handleApplyQuickPrompt(prompt)}
+                      className="px-3 py-1.5 rounded-full bg-white border border-slate-200 hover:border-[#3B5FE5]/30 hover:bg-blue-50/50 text-[10px] font-medium text-slate-600 transition-colors shadow-sm"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-            {qaHistory.length > 0 && (
-              <div className="space-y-3 max-h-[220px] overflow-y-auto pr-1 custom-scrollbar">
-                {qaHistory.slice(-4).map((item, idx) => (
-                  <div
-                    key={idx}
-                    className="bg-white rounded-xl p-4 border border-slate-200"
-                  >
-                    <p className="text-[10px] font-bold tracking-wider uppercase text-slate-400 mb-2">
-                      Question
-                    </p>
-                    <p className="text-[12px] text-slate-800 mb-3">
-                      {item.question}
-                    </p>
-                    <p className="text-[10px] font-bold tracking-wider uppercase text-blue-500 mb-2">
-                      Answer
-                    </p>
-                    <p className="text-[12px] text-slate-700 leading-relaxed">
-                      {item.answer}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="bg-white rounded-[20px] shadow-sm border border-slate-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#3B5FE5] transition-all">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#3B5FE5] transition-all">
               <textarea
-                placeholder="e.g., 'Make the indemnity clause more favorable to us'..."
+                ref={qaInputRef}
+                placeholder="Ask for edits, risk interpretation, or fallback language..."
                 value={qaInput}
                 onChange={(e) => setQaInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -681,28 +734,58 @@ export default function TenantFilesPage() {
                     handleAskQuestion();
                   }
                 }}
-                className="w-full h-[120px] resize-none outline-none text-[13px] text-slate-800 placeholder:text-slate-400 font-medium leading-[1.8] bg-transparent p-6 custom-scrollbar"
+                className="w-full h-[104px] resize-none outline-none text-[13px] text-slate-800 placeholder:text-slate-400 font-medium leading-[1.7] bg-transparent p-5 custom-scrollbar"
               />
-              <div className="flex justify-end p-4 pt-0">
+              <div className="flex items-center justify-between px-4 pb-4">
+                <span className="text-[10px] text-slate-400 font-medium">
+                  Enter to send, Shift+Enter for newline
+                </span>
                 <button
                   onClick={handleAskQuestion}
                   disabled={!contractId || qaLoading || !qaInput.trim()}
-                  className="w-10 h-10 rounded-full bg-slate-100 hover:bg-[#3B5FE5] disabled:bg-slate-100 disabled:text-slate-300 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+                  className="h-10 px-4 rounded-xl bg-[#0B1437] hover:bg-[#152458] disabled:bg-slate-200 disabled:text-slate-400 text-white flex items-center justify-center gap-2 transition-colors text-[12px] font-semibold"
                 >
                   {qaLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Sending
+                    </>
                   ) : (
-                    <Send
-                      className="w-4 h-4 -ml-0.5 mt-0.5"
-                      strokeWidth={2.5}
-                    />
+                    <>
+                      <Send className="w-4 h-4" strokeWidth={2.5} />
+                      Send
+                    </>
                   )}
                 </button>
+              </div>
               </div>
             </div>
           </div>
         </div>
-      ) : (
+      ) : isTemplateGenerationView || showMockGenerated ? (
+        <div className="flex-1 min-w-[380px] max-w-[450px] bg-[#F4F7FB] overflow-y-auto h-full px-8 py-10 space-y-6 custom-scrollbar shadow-[-10px_0_30px_rgba(0,0,0,0.02)] animate-in slide-in-from-right duration-300">
+          <div className="bg-white rounded-[24px] p-8 border border-slate-200 shadow-sm">
+            <h3 className="text-[11px] font-bold tracking-[0.15em] uppercase text-slate-500 mb-4">
+              Template Draft Mode
+            </h3>
+            <p className="text-[13px] text-slate-700 leading-relaxed">
+              This contract was generated from templates. Risk score and
+              clause-level analysis are intentionally hidden in this mode.
+            </p>
+          </div>
+
+          <div className="bg-white rounded-[24px] p-6 border border-slate-200 shadow-sm space-y-3">
+            <h4 className="text-[11px] font-bold tracking-[0.14em] uppercase text-slate-500">
+              Suggested Next Step
+            </h4>
+            <p className="text-[12px] text-slate-600 leading-relaxed">
+              Use the AI Assistant to refine clauses and language. Once saved
+              and analyzed as a tracked contract, risk metrics will appear in
+              the analysis view.
+            </p>
+          </div>
+        </div>
+      ) : (analysis?.overall_risk_score > 0 || (analysis?.clauses && analysis?.clauses.length > 0)) ? (
         /* Analysis Sidebar Right Panel */
         <div className="flex-1 min-w-[380px] max-w-[450px] bg-[#F4F7FB] overflow-y-auto h-full px-8 py-10 space-y-12 custom-scrollbar shadow-[-10px_0_30px_rgba(0,0,0,0.02)] animate-in slide-in-from-right duration-300">
           <div className="bg-[#0B1437] rounded-[24px] p-8 pb-10 text-white shadow-xl relative overflow-hidden group transition-all">
@@ -870,7 +953,7 @@ export default function TenantFilesPage() {
             })}
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
