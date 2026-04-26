@@ -235,8 +235,8 @@ agent = create_deep_agent(
     backend=CompositeBackend(
         default=FilesystemBackend(),
         routes={
-            "/memories/": FilesystemBackend(root_dir="D:/My_Space/Major_Project/backend/workers/contract/memories", virtual_mode=True),
-            "/contracts/": FilesystemBackend(root_dir="D:/My_Space/Major_Project/backend/workers/contract/contracts", virtual_mode=True),
+            "/memories/": FilesystemBackend(root_dir="C:/Users/Prajwal/code/ALAS/backend/workers/contract/memories", virtual_mode=True),
+            "/contracts/": FilesystemBackend(root_dir="C:/Users/Prajwal/code/ALAS/backend/workers/contract/contracts", virtual_mode=True),
         }
     ),
     tools=[retrieve_from_vector_store],

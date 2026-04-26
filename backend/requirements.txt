@@ -103,9 +103,11 @@ PyJWT==2.12.1
 PyMuPDF==1.27.2.2
 pymupdf-layout==1.27.2.2
 pymupdf4llm==1.27.2.2
+pymongo==4.15.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-multipart==0.0.26
+email-validator==2.3.0
 PyYAML==6.0.3
 redis==7.4.0
 requests==2.33.1

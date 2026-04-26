@@ -1,7 +1,13 @@
+docs/
+.env
 venv/
+__pycache__/
+*.pyc
+myenv/
+openapi.json
 .env
 .langgraph_api/
-__pycache__/
 vectorstores/
 *.log
 archive/
+keys/

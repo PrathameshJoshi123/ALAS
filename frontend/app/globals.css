@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@import "github-markdown-css/github-markdown-light.css";
+
+* {
+  @apply border-border;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu",
+    "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family:
+    source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-400 rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-500;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-in;
+}
+
+.animate-slideUp {
+  animation: slideUp 0.3s ease-out;
+}
+
+.contract-markdown.markdown-body {
+  background-color: transparent;
+  color: #334155;
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.contract-markdown.markdown-body h1,
+.contract-markdown.markdown-body h2,
+.contract-markdown.markdown-body h3,
+.contract-markdown.markdown-body h4,
+.contract-markdown.markdown-body h5,
+.contract-markdown.markdown-body h6 {
+  color: #0b1437;
+}
+
+.contract-markdown.markdown-body table {
+  width: 100%;
+  max-width: 100%;
+}
+
+.contract-markdown.markdown-body pre {
+  border: 1px solid #e2e8f0;
+}

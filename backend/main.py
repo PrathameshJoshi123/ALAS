@@ -2,7 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from routes.contracts import router as contracts_router
+from routes.auth import router as auth_router
 from workers.contract.celery_config import celery_app
+from models.database import init_db_indexes
 
 # ==============================================================================
 # LIFECYCLE EVENTS
@@ -15,6 +17,7 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     print("Starting FastAPI application...")
+    init_db_indexes()
     yield
     # Shutdown
     print("Shutting down FastAPI application...")
@@ -50,6 +53,7 @@ app.add_middleware(
 
 # Include contracts routes
 app.include_router(contracts_router)
+app.include_router(auth_router)
 
 
 # ==============================================================================
