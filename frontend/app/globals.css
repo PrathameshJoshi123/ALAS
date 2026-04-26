@@ -1,6 +1,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@import "github-markdown-css/github-markdown-light.css";
 
 * {
   @apply border-border;
@@ -65,4 +66,29 @@ code {
 
 .animate-slideUp {
   animation: slideUp 0.3s ease-out;
+}
+
+.contract-markdown.markdown-body {
+  background-color: transparent;
+  color: #334155;
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.contract-markdown.markdown-body h1,
+.contract-markdown.markdown-body h2,
+.contract-markdown.markdown-body h3,
+.contract-markdown.markdown-body h4,
+.contract-markdown.markdown-body h5,
+.contract-markdown.markdown-body h6 {
+  color: #0b1437;
+}
+
+.contract-markdown.markdown-body table {
+  width: 100%;
+  max-width: 100%;
+}
+
+.contract-markdown.markdown-body pre {
+  border: 1px solid #e2e8f0;
 }

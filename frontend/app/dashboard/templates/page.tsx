@@ -1,12 +1,16 @@
 "use client";
 
-import { Sparkles, Paperclip, ArrowRight, History, FileText, Gavel, Lightbulb, Command, X } from "lucide-react";
-import { useState } from "react";
+import { Sparkles, Paperclip, ArrowRight, History, FileText, Gavel, Lightbulb, Command, X, Loader2 } from "lucide-react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { apiClient } from "@/services/api";
 
 export default function TemplatesPage() {
   const [prompt, setPrompt] = useState("");
   const [showTip, setShowTip] = useState(true);
+  const [file, setFile] = useState<File | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
   const popularStartingPoints = [
@@ -65,9 +69,25 @@ export default function TemplatesPage() {
             <div className="bg-[#F8FAFC] border-t border-slate-100 px-10 py-5 flex items-center justify-between">
               
               <div className="flex items-center gap-8 shadow-sm">
-                <button className="flex items-center gap-2.5 text-slate-500 hover:text-slate-800 transition-colors">
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  className="hidden" 
+                  accept="application/pdf" 
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      setFile(e.target.files[0]);
+                    }
+                  }} 
+                />
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-2.5 text-slate-500 hover:text-slate-800 transition-colors"
+                >
                   <Paperclip className="w-[18px] h-[18px]" strokeWidth={2.5}/>
-                  <span className="text-[13px] font-bold">Attach Sample Contract</span>
+                  <span className="text-[13px] font-bold">
+                    {file ? file.name : "Attach Sample Contract"}
+                  </span>
                 </button>
                 <div className="w-px h-6 bg-slate-200"></div>
                 <div className="flex gap-2">
@@ -77,10 +97,28 @@ export default function TemplatesPage() {
               </div>
 
               <button 
-                onClick={() => router.push(`/dashboard/tenant-files?generating=true&prompt=${encodeURIComponent(prompt)}`)}
-                className="flex items-center gap-2.5 bg-[#152458] hover:bg-[#0B1437] text-white px-7 py-3.5 rounded-xl text-[13px] font-bold shadow-[0_8px_20px_rgba(21,36,88,0.2)] transition-all transform hover:-translate-y-0.5 z-20"
+                disabled={isGenerating || (!file && !prompt)}
+                onClick={async () => {
+                  if (file) {
+                    setIsGenerating(true);
+                    try {
+                      const res = await apiClient.uploadContract(file, {
+                        contract_prompt: prompt,
+                        contract_type: "generation_template",
+                      });
+                      router.push(`/dashboard/tenant-files?generating=true&prompt=${encodeURIComponent(prompt)}&id=${res.id}`);
+                    } catch (e) {
+                      console.error("Failed to generate", e);
+                      setIsGenerating(false);
+                    }
+                  } else {
+                     router.push(`/dashboard/tenant-files?generating=true&prompt=${encodeURIComponent(prompt)}`);
+                  }
+                }}
+                className={`flex items-center gap-2.5 ${isGenerating ? 'bg-slate-400' : 'bg-[#152458] hover:bg-[#0B1437]'} text-white px-7 py-3.5 rounded-xl text-[13px] font-bold shadow-[0_8px_20px_rgba(21,36,88,0.2)] transition-all transform hover:-translate-y-0.5 z-20`}
               >
-                Generate Contract <ArrowRight className="w-4 h-4" strokeWidth={2.5}/>
+                {isGenerating ? <Loader2 className="w-4 h-4 animate-spin"/> : null} 
+                {isGenerating ? 'Uploading...' : 'Generate Contract'} <ArrowRight className="w-4 h-4" strokeWidth={2.5}/>
               </button>
 
             </div>

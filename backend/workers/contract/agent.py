@@ -195,6 +195,25 @@ Create a final structured markdown report at:
 - Fairness
 - Commercial soundness
 
+### 11. Structured Data Output (MANDATORY)
+At the very end of your final report, you MUST output a JSON code block (```json ... ```) with the following structure so the UI can display risk and clauses accurately:
+```json
+{
+  "overall_risk_score": <number between 0 and 100>,
+  "clauses": [
+    {
+      "clause_type": "<e.g. Indemnity, Termination, Liability>",
+      "severity": "<critical | high | medium | low | info>",
+      "risk_description": "<short description of the risk associated with this clause>",
+      "legal_reasoning": "<legal explanation based on Indian Contract Act>",
+      "confidence_score": <number between 0 and 100>,
+      "applicable_statute": "<e.g. Indian Contract Act 1872>",
+      "statute_section": "<e.g. Section 73>"
+    }
+  ]
+}
+```
+
 ---
 
 ## STRICT RULES

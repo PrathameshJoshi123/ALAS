@@ -3,6 +3,27 @@ import Cookies from "js-cookie";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+type AnalysisPayload = {
+  overall_risk_score: number;
+  critical_issues: number;
+  high_issues: number;
+  medium_issues: number;
+  low_issues: number;
+  analysis_summary: string;
+  recommended_actions: string[];
+  clauses: any[];
+  analysis_markdown?: string;
+  source?: string;
+  status?: string;
+  live?: Record<string, any>;
+  detailed_suggestions?: any;
+};
+
+type RetryableRequest = {
+  _retry?: boolean;
+  headers?: Record<string, string>;
+};
+
 class APIClient {
   private client: AxiosInstance;
 
@@ -27,13 +48,14 @@ class APIClient {
     this.client.interceptors.response.use(
       (response) => response,
       async (error: AxiosError) => {
-        const originalRequest = error.config;
+        const originalRequest = (error.config || {}) as RetryableRequest;
         if (
           error.response?.status === 401 &&
           originalRequest &&
-          !originalRequest.headers["Authorization"]
+          !originalRequest._retry
         ) {
           try {
+            originalRequest._retry = true;
             const refreshToken = Cookies.get("refresh_token");
             if (refreshToken) {
               const response = await this.client.post("/api/auth/refresh", {
@@ -41,10 +63,11 @@ class APIClient {
               });
               const { access_token } = response.data;
               Cookies.set("access_token", access_token);
-              if (originalRequest.headers) {
-                originalRequest.headers.Authorization = `Bearer ${access_token}`;
-              }
-              return this.client(originalRequest);
+              originalRequest.headers = {
+                ...(originalRequest.headers || {}),
+                Authorization: `Bearer ${access_token}`,
+              };
+              return this.client(originalRequest as any);
             }
           } catch (err) {
             Cookies.remove("access_token");
@@ -150,26 +173,22 @@ class APIClient {
   async uploadContract(
     file: File,
     metadata: {
-      counterparty_name: string;
-      contract_type: string;
+      company_name?: string;
+      counterparty_name?: string;
+      contract_type?: string;
+      contract_prompt?: string;
     },
   ) {
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("counterparty_name", metadata.counterparty_name);
-    formData.append("contract_type", metadata.contract_type);
+    if (metadata.company_name) formData.append("company_name", metadata.company_name);
+    if (metadata.counterparty_name) formData.append("counterparty_name", metadata.counterparty_name);
+    if (metadata.contract_type) formData.append("contract_type", metadata.contract_type);
+    if (metadata.contract_prompt) formData.append("contract_prompt", metadata.contract_prompt);
 
     const response = await this.client.post("/api/contracts/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
     });
-    
-    // Initiate analysis immediately after upload
-    try {
-      const contractId = response.data.id;
-      await this.client.post(`/api/contracts/${contractId}/analyze`);
-    } catch (e) {
-      console.error("Failed to initiate analysis", e);
-    }
 
     return response.data;
   }
@@ -187,21 +206,100 @@ class APIClient {
   }
 
   async getContractClauses(contractId: string) {
-    const response = await this.client.get(
-      `/api/contracts/${contractId}/risk-analysis`,
-    );
-    return { items: response.data.clauses || [] };
+    const analysis = await this.getContractAnalysis(contractId);
+    return { items: analysis.clauses || [] };
+  }
+
+  private normalizeAnalysisPayload(raw: any): AnalysisPayload {
+    const base: AnalysisPayload = {
+      overall_risk_score: Number(
+        raw?.overall_risk_score || raw?.risk_score || 0,
+      ),
+      critical_issues: Number(raw?.critical_issues || raw?.critical || 0),
+      high_issues: Number(raw?.high_issues || raw?.high || 0),
+      medium_issues: Number(raw?.medium_issues || raw?.medium || 0),
+      low_issues: Number(raw?.low_issues || raw?.low || 0),
+      analysis_summary:
+        raw?.analysis_summary || raw?.summary || "Analysis not ready yet.",
+      recommended_actions: Array.isArray(raw?.recommended_actions)
+        ? raw.recommended_actions
+        : Array.isArray(raw?.recommendations)
+          ? raw.recommendations
+          : [],
+      clauses: [],
+      analysis_markdown: raw?.analysis_markdown || "",
+      source: raw?.source,
+      status: raw?.status,
+      live: raw?.live,
+      detailed_suggestions: raw?.detailed_suggestions,
+    };
+
+    if (raw?.source === "memories_markdown" || raw?.analysis_markdown) {
+      base.clauses = Array.isArray(raw?.clauses) ? raw.clauses : [];
+      return base;
+    }
+
+    const clauses = Array.isArray(raw?.clauses)
+      ? raw.clauses.map((c: any, i: number) => ({
+          id: c?.id || c?.clause_id || `${i + 1}`,
+          clause_number: c?.clause_number || i + 1,
+          clause_type: c?.clause_type || c?.type || "general",
+          section_title: c?.section_title || c?.title || `Clause ${i + 1}`,
+          raw_text: c?.raw_text || c?.text || "",
+          severity: String(c?.severity || "info").toUpperCase(),
+          risk_description: c?.risk_description || c?.risk || "",
+          legal_reasoning: c?.legal_reasoning || c?.reasoning || "",
+          confidence_score: Number(c?.confidence_score || c?.confidence || 0),
+          applicable_statute: c?.applicable_statute,
+          statute_section: c?.statute_section,
+        }))
+      : [];
+
+    base.clauses = clauses;
+    return base;
   }
 
   async getContractAnalysis(contractId: string) {
-    const response = await this.client.get(
-      `/api/contracts/${contractId}/risk-analysis`,
-    );
-    return response.data;
+    try {
+      const response = await this.client.get(
+        `/api/contracts/${contractId}/analysis`,
+      );
+      return this.normalizeAnalysisPayload(
+        response.data?.result || response.data || {},
+      );
+    } catch {
+      return this.normalizeAnalysisPayload({});
+    }
   }
 
   async deleteContract(contractId: string) {
     const response = await this.client.delete(`/api/contracts/${contractId}`);
+    return response.data;
+  }
+
+  async analyzeContract(contractId: string) {
+    const response = await this.client.post(
+      `/api/contracts/${contractId}/analyze`,
+    );
+    return response.data;
+  }
+
+  async askContractQuestion(contractId: string, question: string) {
+    const response = await this.client.post(`/api/contracts/${contractId}/qa`, {
+      question,
+    });
+    return response.data;
+  }
+
+  async listMarkdownFiles() {
+    const response = await this.client.get("/api/contracts/markdown");
+    return response.data;
+  }
+
+  async getMarkdownContent(filename: string) {
+    const response = await this.client.get(
+      `/api/contracts/markdown/${encodeURIComponent(filename)}`,
+    );
     return response.data;
   }
 }

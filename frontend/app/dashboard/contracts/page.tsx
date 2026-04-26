@@ -7,11 +7,12 @@ import { apiClient } from "@/services/api";
 
 interface Contract {
   id: string;
-  filename: string;
+  original_filename: string;
+  markdown_file: string;
   counterparty_name: string;
+  company_name: string;
   contract_type: string;
   status: string;
-  overall_risk_score: number;
   created_at: string;
 }
 
@@ -42,8 +43,10 @@ export default function ContractsPage() {
 
   const filteredContracts = contracts.filter((contract) => {
     const matchesSearch =
-      contract.filename.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      contract.counterparty_name
+      (contract.original_filename || contract.markdown_file || "")
+        .toLowerCase()
+        .includes(searchTerm.toLowerCase()) ||
+      (contract.counterparty_name || contract.company_name || "")
         .toLowerCase()
         .includes(searchTerm.toLowerCase());
     const matchesStatus =
@@ -51,18 +54,12 @@ export default function ContractsPage() {
     return matchesSearch && matchesStatus;
   });
 
-  const getRiskColor = (score: number) => {
-    if (score >= 70) return "bg-red-100 text-red-800";
-    if (score >= 40) return "bg-yellow-100 text-yellow-800";
-    return "bg-green-100 text-green-800";
-  };
-
   const getStatusBadge = (status: string) => {
     const statusMap: Record<string, { bg: string; text: string }> = {
-      UPLOADED: { bg: "bg-blue-100", text: "text-blue-800" },
       PROCESSING: { bg: "bg-purple-100", text: "text-purple-800" },
-      ANALYZED: { bg: "bg-green-100", text: "text-green-800" },
-      REVIEW_PENDING: { bg: "bg-yellow-100", text: "text-yellow-800" },
+      COMPLETED: { bg: "bg-green-100", text: "text-green-800" },
+      FAILED: { bg: "bg-red-100", text: "text-red-800" },
+      UPLOADED: { bg: "bg-blue-100", text: "text-blue-800" },
       APPROVED: { bg: "bg-green-100", text: "text-green-800" },
       REJECTED: { bg: "bg-red-100", text: "text-red-800" },
     };
@@ -111,10 +108,9 @@ export default function ContractsPage() {
             className="px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
           >
             <option value="ALL">All Status</option>
-            <option value="UPLOADED">Uploaded</option>
-            <option value="PROCESSING">Processing</option>
-            <option value="ANALYZED">Analyzed</option>
-            <option value="REVIEW_PENDING">Review Pending</option>
+            <option value="processing">Processing</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
             <option value="APPROVED">Approved</option>
             <option value="REJECTED">Rejected</option>
           </select>
@@ -172,11 +168,11 @@ export default function ContractsPage() {
                     >
                       <td className="px-6 py-4">
                         <p className="font-medium text-slate-900 truncate">
-                          {contract.filename}
+                          {contract.original_filename || contract.markdown_file}
                         </p>
                       </td>
                       <td className="px-6 py-4 text-slate-600">
-                        {contract.counterparty_name}
+                        {contract.counterparty_name || contract.company_name}
                       </td>
                       <td className="px-6 py-4 text-slate-600 text-sm">
                         {contract.contract_type}
@@ -189,10 +185,8 @@ export default function ContractsPage() {
                         </span>
                       </td>
                       <td className="px-6 py-4">
-                        <span
-                          className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${getRiskColor(contract.overall_risk_score || 0)}`}
-                        >
-                          {contract.overall_risk_score || 0}%
+                        <span className="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">
+                          Pending
                         </span>
                       </td>
                       <td className="px-6 py-4 text-slate-600 text-sm">

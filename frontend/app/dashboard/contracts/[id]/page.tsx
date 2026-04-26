@@ -6,8 +6,12 @@ import {
   AlertCircle,
   CheckCircle,
   Info,
-  Loader,
+  Loader2,
   ArrowLeft,
+  Clock3,
+  FileText,
+  Database,
+  FileSearch,
 } from "lucide-react";
 import Link from "next/link";
 import toast from "react-hot-toast";
@@ -35,30 +39,91 @@ export default function ContractDetailsPage() {
   const [expandedClauses, setExpandedClauses] = useState<Set<string>>(
     new Set(),
   );
+  const [contractMarkdownPreview, setContractMarkdownPreview] = useState("");
+  const [finalAnalysisPreview, setFinalAnalysisPreview] = useState("");
+  const [pollingActive, setPollingActive] = useState(false);
 
   useEffect(() => {
-    const fetchContractData = async () => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let stopped = false;
+
+    const fetchContractData = async (isInitial = false) => {
       try {
-        setLoading(true);
-        const [contractRes, clausesRes, analysisRes] = await Promise.all([
+        if (isInitial) {
+          setLoading(true);
+        }
+
+        const [contractRes, analysisRes, markdownListRes] = await Promise.all([
           apiClient.getContractDetails(contractId),
-          apiClient.getContractClauses(contractId),
           apiClient.getContractAnalysis(contractId),
+          apiClient.listMarkdownFiles(),
         ]);
 
         setContract(contractRes);
-        setClauses(clausesRes.items || []);
+        setClauses(analysisRes.clauses || []);
         setAnalysis(analysisRes);
+
+        const files: string[] = Array.isArray(markdownListRes?.files)
+          ? markdownListRes.files
+          : [];
+
+        const contractMarkdownName = contractRes?.markdown_file;
+        const finalAnalysisName = contractRes?.live?.final_analysis_filename;
+
+        const hasContractMarkdown =
+          contractMarkdownName && files.includes(contractMarkdownName);
+        const hasFinalAnalysis =
+          finalAnalysisName && files.includes(finalAnalysisName);
+
+        if (hasContractMarkdown) {
+          const md = await apiClient.getMarkdownContent(contractMarkdownName);
+          setContractMarkdownPreview(String(md?.content || "").slice(0, 900));
+        }
+
+        if (hasFinalAnalysis) {
+          const finalMd = await apiClient.getMarkdownContent(finalAnalysisName);
+          setFinalAnalysisPreview(
+            String(finalMd?.content || "").slice(0, 1200),
+          );
+        }
+
+        const shouldContinuePolling =
+          contractRes?.status !== "completed" ||
+          !contractRes?.live?.result_ready ||
+          !contractRes?.live?.final_analysis_ready ||
+          !contractRes?.live?.vector_store_ready;
+
+        setPollingActive(shouldContinuePolling);
+        if (!shouldContinuePolling && intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
       } catch (error) {
-        toast.error("Failed to load contract details");
+        if (isInitial) {
+          toast.error("Failed to load contract details");
+        }
       } finally {
-        setLoading(false);
+        if (isInitial) {
+          setLoading(false);
+        }
       }
     };
 
     if (contractId) {
-      fetchContractData();
+      fetchContractData(true);
+      intervalId = setInterval(() => {
+        if (!stopped) {
+          fetchContractData(false);
+        }
+      }, 4000);
     }
+
+    return () => {
+      stopped = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
   }, [contractId]);
 
   const toggleClauseExpand = (clauseId: string) => {
@@ -130,11 +195,113 @@ export default function ContractDetailsPage() {
         </Link>
         <div>
           <h1 className="text-3xl font-bold text-slate-900">
-            {contract.filename}
+            {contract.original_filename || contract.markdown_file}
           </h1>
           <p className="text-slate-600 mt-1">
-            Counterparty: {contract.counterparty_name}
+            Counterparty: {contract.counterparty_name || contract.company_name}
           </p>
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            {pollingActive ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />
+                <span className="text-blue-700 font-medium">
+                  Live polling active: waiting for worker updates...
+                </span>
+              </>
+            ) : (
+              <>
+                <CheckCircle className="w-3.5 h-3.5 text-green-600" />
+                <span className="text-green-700 font-medium">
+                  Analysis pipeline completed
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Live worker progress */}
+      <div className="bg-white rounded-lg shadow border border-slate-200 p-6">
+        <h2 className="text-lg font-bold text-slate-900 mb-4">
+          Live Worker Progress
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div
+            className={`rounded-lg border p-3 ${contract?.live?.markdown_ready ? "border-green-200 bg-green-50" : "border-slate-200 bg-slate-50"}`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <FileText className="w-4 h-4 text-slate-700" />
+              <span className="text-xs font-semibold text-slate-700">
+                Markdown Parsed
+              </span>
+            </div>
+            <p className="text-xs text-slate-600">
+              {contract?.live?.markdown_ready ? "Ready" : "Pending"}
+            </p>
+          </div>
+
+          <div
+            className={`rounded-lg border p-3 ${contract?.live?.result_ready ? "border-green-200 bg-green-50" : "border-slate-200 bg-slate-50"}`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <FileSearch className="w-4 h-4 text-slate-700" />
+              <span className="text-xs font-semibold text-slate-700">
+                Analysis Result JSON
+              </span>
+            </div>
+            <p className="text-xs text-slate-600">
+              {contract?.live?.result_ready ? "Ready" : "Pending"}
+            </p>
+          </div>
+
+          <div
+            className={`rounded-lg border p-3 ${contract?.live?.final_analysis_ready ? "border-green-200 bg-green-50" : "border-slate-200 bg-slate-50"}`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <Clock3 className="w-4 h-4 text-slate-700" />
+              <span className="text-xs font-semibold text-slate-700">
+                Final Analysis Markdown
+              </span>
+            </div>
+            <p className="text-xs text-slate-600">
+              {contract?.live?.final_analysis_ready ? "Ready" : "Pending"}
+            </p>
+          </div>
+
+          <div
+            className={`rounded-lg border p-3 ${contract?.live?.vector_store_ready ? "border-green-200 bg-green-50" : "border-slate-200 bg-slate-50"}`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <Database className="w-4 h-4 text-slate-700" />
+              <span className="text-xs font-semibold text-slate-700">
+                Vector Store
+              </span>
+            </div>
+            <p className="text-xs text-slate-600">
+              {contract?.live?.vector_store_ready ? "Ready" : "Pending"}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Live markdown previews */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-lg shadow border border-slate-200 p-5">
+          <h3 className="text-sm font-semibold text-slate-900 mb-3">
+            Contract Markdown Preview
+          </h3>
+          <pre className="whitespace-pre-wrap text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded p-3 max-h-64 overflow-y-auto">
+            {contractMarkdownPreview || "Waiting for markdown content..."}
+          </pre>
+        </div>
+
+        <div className="bg-white rounded-lg shadow border border-slate-200 p-5">
+          <h3 className="text-sm font-semibold text-slate-900 mb-3">
+            Final Analysis Preview
+          </h3>
+          <pre className="whitespace-pre-wrap text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded p-3 max-h-64 overflow-y-auto">
+            {finalAnalysisPreview || "Waiting for final analysis markdown..."}
+          </pre>
         </div>
       </div>
 
@@ -149,14 +316,14 @@ export default function ContractDetailsPage() {
             <div className="w-24 h-24 rounded-full bg-gradient-to-br from-blue-100 to-blue-50 flex items-center justify-center mx-auto mb-3">
               <span
                 className={`text-4xl font-bold ${
-                  contract.overall_risk_score >= 70
+                  (analysis?.overall_risk_score || 0) >= 70
                     ? "text-red-600"
-                    : contract.overall_risk_score >= 40
+                    : (analysis?.overall_risk_score || 0) >= 40
                       ? "text-orange-600"
                       : "text-green-600"
                 }`}
               >
-                {contract.overall_risk_score || 0}%
+                {analysis?.overall_risk_score || 0}%
               </span>
             </div>
             <p className="text-sm text-slate-600">Out of 100</p>
